@@ -314,8 +314,19 @@ func (r *runtime) InstantiateModule(
 		name = code.module.NameSection.ModuleName
 	}
 
+	var resolveImport func(string) (api.Module, bool)
+	if len(config.namedImports) > 0 {
+		resolveImport = func(importName string) (api.Module, bool) {
+			m, ok := config.namedImports[importName]
+			if ok {
+				return m, true
+			}
+			return nil, false
+		}
+	}
+
 	// Instantiate the module.
-	mod, err = r.store.Instantiate(ctx, code.module, name, sysCtx, code.typeIDs)
+	mod, err = r.store.Instantiate(ctx, code.module, name, sysCtx, code.typeIDs, resolveImport)
 	if err != nil {
 		// If there was an error, don't leak the compiled module.
 		if code.closeWithModule {

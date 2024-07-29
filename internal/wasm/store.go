@@ -321,9 +321,10 @@ func (s *Store) Instantiate(
 	name string,
 	sys *internalsys.Context,
 	typeIDs []FunctionTypeID,
+	resolveImport func(string) (api.Module, bool),
 ) (*ModuleInstance, error) {
 	// Instantiate the module and add it to the store so that other modules can import it.
-	m, err := s.instantiate(ctx, module, name, sys, typeIDs)
+	m, err := s.instantiate(ctx, module, name, sys, typeIDs, resolveImport)
 	if err != nil {
 		return nil, err
 	}
@@ -342,6 +343,7 @@ func (s *Store) instantiate(
 	name string,
 	sysCtx *internalsys.Context,
 	typeIDs []FunctionTypeID,
+	resolveImport func(string) (api.Module, bool),
 ) (m *ModuleInstance, err error) {
 	m = &ModuleInstance{ModuleName: name, TypeIDs: typeIDs, Sys: sysCtx, s: s, Source: module}
 
@@ -352,7 +354,7 @@ func (s *Store) instantiate(
 		return nil, err
 	}
 
-	if err = m.resolveImports(module); err != nil {
+	if err = m.resolveImports(module, resolveImport); err != nil {
 		return nil, err
 	}
 
@@ -410,12 +412,19 @@ func (s *Store) instantiate(
 	return
 }
 
-func (m *ModuleInstance) resolveImports(module *Module) (err error) {
+func (m *ModuleInstance) resolveImports(module *Module, resolveImport func(string) (api.Module, bool)) (err error) {
 	for moduleName, imports := range module.ImportPerModule {
 		var importedModule *ModuleInstance
-		importedModule, err = m.s.module(moduleName)
-		if err != nil {
-			return err
+		if resolveImport != nil {
+			if m, found := resolveImport(moduleName); found {
+				importedModule = m.(*ModuleInstance)
+			}
+		}
+		if importedModule == nil {
+			importedModule, err = m.s.module(moduleName)
+			if err != nil {
+				return err
+			}
 		}
 
 		for _, i := range imports {

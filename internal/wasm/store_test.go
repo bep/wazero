@@ -81,7 +81,7 @@ func TestModuleInstance_Memory(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newStore()
 
-			instance, err := s.Instantiate(testCtx, tc.input, "test", nil, nil)
+			instance, err := s.Instantiate(testCtx, tc.input, "test", nil, nil, nil)
 			require.NoError(t, err)
 
 			mem := instance.ExportedMemory("memory")
@@ -105,7 +105,7 @@ func TestStore_Instantiate(t *testing.T) {
 	require.NoError(t, err)
 
 	sysCtx := sys.DefaultContext(nil)
-	mod, err := s.Instantiate(testCtx, m, "bar", sysCtx, []FunctionTypeID{0})
+	mod, err := s.Instantiate(testCtx, m, "bar", sysCtx, []FunctionTypeID{0}, nil)
 	require.NoError(t, err)
 	defer mod.Close(testCtx)
 
@@ -146,7 +146,7 @@ func TestStore_CloseWithExitCode(t *testing.T) {
 				CodeSection:               []Code{{Body: []byte{OpcodeEnd}}},
 				Exports:                   map[string]*Export{"fn": {Type: ExternTypeFunc, Name: "fn"}},
 				FunctionDefinitionSection: []FunctionDefinition{{Functype: &v_v}},
-			}, importedModuleName, nil, []FunctionTypeID{0})
+			}, importedModuleName, nil, []FunctionTypeID{0}, nil)
 			require.NoError(t, err)
 
 			m2, err := s.Instantiate(testCtx, &Module{
@@ -157,7 +157,7 @@ func TestStore_CloseWithExitCode(t *testing.T) {
 				MemoryDefinitionSection: []MemoryDefinition{{}},
 				GlobalSection:           []Global{{Type: GlobalType{}, Init: ConstantExpression{Opcode: OpcodeI32Const, Data: const1}}},
 				TableSection:            []Table{{Min: 10}},
-			}, importingModuleName, nil, []FunctionTypeID{0})
+			}, importingModuleName, nil, []FunctionTypeID{0}, nil)
 			require.NoError(t, err)
 
 			if tc.testClosed {
@@ -189,7 +189,7 @@ func TestStore_hammer(t *testing.T) {
 	require.NoError(t, err)
 
 	s := newStore()
-	imported, err := s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0})
+	imported, err := s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0}, nil)
 	require.NoError(t, err)
 
 	_, ok := s.nameToModule[imported.Name()]
@@ -221,7 +221,7 @@ func TestStore_hammer(t *testing.T) {
 		N = 100
 	}
 	hammer.NewHammer(t, P, N).Run(func(p, n int) {
-		mod, instantiateErr := s.Instantiate(testCtx, importingModule, fmt.Sprintf("%d:%d", p, n), sys.DefaultContext(nil), []FunctionTypeID{0})
+		mod, instantiateErr := s.Instantiate(testCtx, importingModule, fmt.Sprintf("%d:%d", p, n), sys.DefaultContext(nil), []FunctionTypeID{0}, nil)
 		require.NoError(t, instantiateErr)
 		require.NoError(t, mod.Close(testCtx))
 	}, nil)
@@ -248,7 +248,7 @@ func TestStore_hammer_close(t *testing.T) {
 	require.NoError(t, err)
 
 	s := newStore()
-	imported, err := s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0})
+	imported, err := s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0}, nil)
 	require.NoError(t, err)
 
 	_, ok := s.nameToModule[imported.Name()]
@@ -274,7 +274,7 @@ func TestStore_hammer_close(t *testing.T) {
 	const instCount = 10000
 	instances := make([]api.Module, instCount)
 	for i := 0; i < instCount; i++ {
-		mod, instantiateErr := s.Instantiate(testCtx, importingModule, strconv.Itoa(i), sys.DefaultContext(nil), []FunctionTypeID{0})
+		mod, instantiateErr := s.Instantiate(testCtx, importingModule, strconv.Itoa(i), sys.DefaultContext(nil), []FunctionTypeID{0}, nil)
 		require.NoError(t, instantiateErr)
 		instances[i] = mod
 	}
@@ -313,17 +313,17 @@ func TestStore_Instantiate_Errors(t *testing.T) {
 
 	t.Run("Fails if module name already in use", func(t *testing.T) {
 		s := newStore()
-		_, err = s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0})
+		_, err = s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0}, nil)
 		require.NoError(t, err)
 
 		// Trying to register it again should fail
-		_, err = s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0})
+		_, err = s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0}, nil)
 		require.EqualError(t, err, "module[imported] has already been instantiated")
 	})
 
 	t.Run("fail resolve import", func(t *testing.T) {
 		s := newStore()
-		_, err = s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0})
+		_, err = s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0}, nil)
 		require.NoError(t, err)
 
 		hm := s.nameToModule[importedModuleName]
@@ -341,14 +341,14 @@ func TestStore_Instantiate_Errors(t *testing.T) {
 				importedModuleName: {{Type: ExternTypeFunc, Module: importedModuleName, Name: "fn", DescFunc: 0}},
 				"non-exist":        {{Name: "fn", DescFunc: 0}},
 			},
-		}, importingModuleName, nil, nil)
+		}, importingModuleName, nil, nil, nil)
 		require.EqualError(t, err, "module[non-exist] not instantiated")
 	})
 
 	t.Run("creating engine failed", func(t *testing.T) {
 		s := newStore()
 
-		_, err = s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0})
+		_, err = s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0}, nil)
 		require.NoError(t, err)
 
 		hm := s.nameToModule[importedModuleName]
@@ -370,7 +370,7 @@ func TestStore_Instantiate_Errors(t *testing.T) {
 			},
 		}
 
-		_, err = s.Instantiate(testCtx, importingModule, importingModuleName, nil, []FunctionTypeID{0})
+		_, err = s.Instantiate(testCtx, importingModule, importingModuleName, nil, []FunctionTypeID{0}, nil)
 		require.EqualError(t, err, "some engine creation error")
 	})
 
@@ -379,7 +379,7 @@ func TestStore_Instantiate_Errors(t *testing.T) {
 		engine := s.Engine.(*mockEngine)
 		engine.callFailIndex = 1
 
-		_, err = s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0})
+		_, err = s.Instantiate(testCtx, m, importedModuleName, nil, []FunctionTypeID{0}, nil)
 		require.NoError(t, err)
 
 		hm := s.nameToModule[importedModuleName]
@@ -397,7 +397,7 @@ func TestStore_Instantiate_Errors(t *testing.T) {
 			},
 		}
 
-		_, err = s.Instantiate(testCtx, importingModule, importingModuleName, nil, []FunctionTypeID{0})
+		_, err = s.Instantiate(testCtx, importingModule, importingModuleName, nil, []FunctionTypeID{0}, nil)
 		require.EqualError(t, err, "start function[1] failed: call failed")
 	})
 }
@@ -701,13 +701,13 @@ func Test_resolveImports(t *testing.T) {
 
 	t.Run("module not instantiated", func(t *testing.T) {
 		m := &ModuleInstance{s: newStore()}
-		err := m.resolveImports(&Module{ImportPerModule: map[string][]*Import{"unknown": {{}}}})
+		err := m.resolveImports(&Module{ImportPerModule: map[string][]*Import{"unknown": {{}}}}, nil)
 		require.EqualError(t, err, "module[unknown] not instantiated")
 	})
 	t.Run("export instance not found", func(t *testing.T) {
 		m := &ModuleInstance{s: newStore()}
 		m.s.nameToModule[moduleName] = &ModuleInstance{Exports: map[string]*Export{}, ModuleName: moduleName}
-		err := m.resolveImports(&Module{ImportPerModule: map[string][]*Import{moduleName: {{Name: "unknown"}}}})
+		err := m.resolveImports(&Module{ImportPerModule: map[string][]*Import{moduleName: {{Name: "unknown"}}}}, nil)
 		require.EqualError(t, err, "\"unknown\" is not exported in module \"test\"")
 	})
 	t.Run("func", func(t *testing.T) {
@@ -743,7 +743,7 @@ func Test_resolveImports(t *testing.T) {
 			}
 
 			m := &ModuleInstance{Engine: &mockModuleEngine{resolveImportsCalled: map[Index]Index{}}, s: s, Source: module}
-			err := m.resolveImports(module)
+			err := m.resolveImports(module, nil)
 			require.NoError(t, err)
 
 			me := m.Engine.(*mockModuleEngine)
@@ -773,7 +773,7 @@ func Test_resolveImports(t *testing.T) {
 			}
 
 			m := &ModuleInstance{Engine: &mockModuleEngine{resolveImportsCalled: map[Index]Index{}}, s: s, Source: module}
-			err := m.resolveImports(module)
+			err := m.resolveImports(module, nil)
 			require.EqualError(t, err, "import func[test.target]: signature mismatch: v_f32 != v_v")
 		})
 	})
@@ -790,6 +790,7 @@ func Test_resolveImports(t *testing.T) {
 				&Module{
 					ImportPerModule: map[string][]*Import{moduleName: {{Name: name, Type: ExternTypeGlobal, DescGlobal: g.Type}}},
 				},
+				nil,
 			)
 			require.NoError(t, err)
 			require.True(t, globalsContain(m.Globals, g), "expected to find %v in %v", g, m.Globals)
@@ -809,7 +810,7 @@ func Test_resolveImports(t *testing.T) {
 				ImportPerModule: map[string][]*Import{moduleName: {
 					{Module: moduleName, Name: name, Type: ExternTypeGlobal, DescGlobal: GlobalType{Mutable: true}},
 				}},
-			})
+			}, nil)
 			require.EqualError(t, err, "import global[test.target]: mutability mismatch: true != false")
 		})
 		t.Run("type mismatch", func(t *testing.T) {
@@ -827,7 +828,7 @@ func Test_resolveImports(t *testing.T) {
 				ImportPerModule: map[string][]*Import{moduleName: {
 					{Module: moduleName, Name: name, Type: ExternTypeGlobal, DescGlobal: GlobalType{ValType: ValueTypeF64}},
 				}},
-			})
+			}, nil)
 			require.EqualError(t, err, "import global[test.target]: value type mismatch: f64 != i32")
 		})
 	})
@@ -850,7 +851,7 @@ func Test_resolveImports(t *testing.T) {
 				ImportPerModule: map[string][]*Import{
 					moduleName: {{Module: moduleName, Name: name, Type: ExternTypeMemory, DescMem: &Memory{Max: max}}},
 				},
-			})
+			}, nil)
 			require.NoError(t, err)
 			require.Equal(t, m.MemoryInstance, memoryInst)
 			require.Equal(t, importedME, m.Engine.(*mockModuleEngine).importedMemModEngine)
@@ -870,7 +871,7 @@ func Test_resolveImports(t *testing.T) {
 				ImportPerModule: map[string][]*Import{
 					moduleName: {{Module: moduleName, Name: name, Type: ExternTypeMemory, DescMem: importMemoryType}},
 				},
-			})
+			}, nil)
 			require.EqualError(t, err, "import memory[test.target]: minimum size mismatch: 2 > 1")
 		})
 		t.Run("maximum size mismatch", func(t *testing.T) {
@@ -888,7 +889,7 @@ func Test_resolveImports(t *testing.T) {
 			m := &ModuleInstance{s: s}
 			err := m.resolveImports(&Module{
 				ImportPerModule: map[string][]*Import{moduleName: {{Module: moduleName, Name: name, Type: ExternTypeMemory, DescMem: importMemoryType}}},
-			})
+			}, nil)
 			require.EqualError(t, err, "import memory[test.target]: maximum size mismatch: 10 < 65536")
 		})
 	})

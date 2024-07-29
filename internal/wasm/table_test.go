@@ -33,7 +33,7 @@ func Test_resolveImports_table(t *testing.T) {
 			ImportPerModule: map[string][]*Import{
 				moduleName: {{Module: moduleName, Name: name, Type: ExternTypeTable, DescTable: Table{Max: &max}}},
 			},
-		})
+		}, nil)
 		require.NoError(t, err)
 		require.Equal(t, m.Tables[0], tableInst)
 		require.Equal(t, m.Tables[0].involvingModuleInstances[1], m)
@@ -51,7 +51,7 @@ func Test_resolveImports_table(t *testing.T) {
 			ImportPerModule: map[string][]*Import{
 				moduleName: {{Module: moduleName, Name: name, Type: ExternTypeTable, DescTable: importTableType}},
 			},
-		})
+		}, nil)
 		require.EqualError(t, err, "import table[test.target]: minimum size mismatch: 2 > 1")
 	})
 	t.Run("maximum size mismatch", func(t *testing.T) {
@@ -68,7 +68,7 @@ func Test_resolveImports_table(t *testing.T) {
 			ImportPerModule: map[string][]*Import{
 				moduleName: {{Module: moduleName, Name: name, Type: ExternTypeTable, DescTable: importTableType}},
 			},
-		})
+		}, nil)
 		require.EqualError(t, err, "import table[test.target]: maximum size mismatch: 10, but actual has no max")
 	})
 	t.Run("type mismatch", func(t *testing.T) {
@@ -83,7 +83,7 @@ func Test_resolveImports_table(t *testing.T) {
 			ImportPerModule: map[string][]*Import{
 				moduleName: {{Module: moduleName, Name: name, Type: ExternTypeTable, DescTable: Table{Type: RefTypeExternref}}},
 			},
-		})
+		}, nil)
 		require.EqualError(t, err, "import table[test.target]: table type mismatch: externref != funcref")
 	})
 }

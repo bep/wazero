@@ -494,6 +494,8 @@ type ModuleConfig interface {
 	// (e.g. syscall.ENOSYS).
 	WithFSConfig(FSConfig) ModuleConfig
 
+	WithNamedImports(map[string]api.Module) ModuleConfig
+
 	// WithName configures the module name. Defaults to what was decoded from
 	// the name section. Duplicate names are not allowed in a single Runtime.
 	//
@@ -676,6 +678,9 @@ type moduleConfig struct {
 	nanosleep          sys.Nanosleep
 	osyield            sys.Osyield
 	args               [][]byte
+
+	// namedImports is a map of named imports to modules.
+	namedImports map[string]api.Module
 	// environ is pair-indexed to retain order similar to os.Environ.
 	environ [][]byte
 	// environKeys allow overwriting of existing values.
@@ -702,6 +707,12 @@ func (c *moduleConfig) clone() *moduleConfig {
 		ret.environKeys[key] = value
 	}
 	return &ret
+}
+
+func (c *moduleConfig) WithNamedImports(namedImports map[string]api.Module) ModuleConfig {
+	ret := c.clone()
+	ret.namedImports = namedImports
+	return ret
 }
 
 // WithArgs implements ModuleConfig.WithArgs
