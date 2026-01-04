@@ -98,7 +98,7 @@ func (m *Module) validateFunctionWithMaxStackValues(
 			} else {
 				instName = InstructionName(op)
 			}
-			fmt.Printf("handling %s, stack=%s, blocks: %v\n", instName, valueTypeStack.stack, controlBlockStack)
+			fmt.Printf("handling %s, stack=%s, blocks: %v\n", instName, valueTypeStack, controlBlockStack)
 		}
 
 		if len(controlBlockStack.stack) == 0 {
@@ -538,6 +538,16 @@ func (m *Module) validateFunctionWithMaxStackValues(
 
 			// br_table instruction is stack-polymorphic.
 			valueTypeStack.unreachable()
+		} else if op == OpcodeThrowRef {
+			if err := enabledFeatures.RequireEnabled(api.CoreFeatureExceptionHandling); err != nil {
+				return fmt.Errorf("%s invalid as %v", OpcodeThrowRefName, err)
+			}
+
+			if err := valueTypeStack.popAndVerifyType(ValueTypeExnref); err != nil {
+				return fmt.Errorf("type mismatch on %s operand: %v", OpcodeThrowRefName, err)
+			}
+
+			valueTypeStack.unreachable()
 		} else if op == OpcodeCall || op == OpcodeTailCallReturnCall {
 			pc++
 			index, num, err := leb128.LoadUint32(body[pc:])
@@ -864,6 +874,8 @@ func (m *Module) validateFunctionWithMaxStackValues(
 					valueTypeStack.push(ValueTypeExternref)
 				case ValueTypeFuncref:
 					valueTypeStack.push(ValueTypeFuncref)
+				case ValueTypeExnref:
+					valueTypeStack.push(ValueTypeExnref)
 				default:
 					return fmt.Errorf("unknown type for ref.null: 0x%x", reftype)
 				}
@@ -1969,6 +1981,130 @@ func (m *Module) validateFunctionWithMaxStackValues(
 			} else {
 				valueTypeStack.push(v1)
 			}
+		} else if op == OpcodeTryTable {
+			// A try block contains zero or more catch clauses. If there are no catch clauses, then the try block does not catch any exceptions.
+			// The body of the try block is the list of instructions after the last catch clause, if any.
+			// Each catch clause can be in one of 4 forms: catch, catch_ref,  catch_all, or catch_all_ref.
+			if err := enabledFeatures.RequireEnabled(api.CoreFeatureExceptionHandling); err != nil {
+				return fmt.Errorf("%s invalid as %v", InstructionName(op), err)
+			}
+			pc++
+			br.Reset(body[pc:])
+			bt, num, err := DecodeBlockType(m.TypeSection, br, enabledFeatures)
+			if err != nil {
+				return fmt.Errorf("read block: %w", err)
+			}
+
+			totalNum := num
+			catchClauseCount, num, err := leb128.DecodeUint32(br)
+			if err != nil {
+				return fmt.Errorf("read catch clause count: %w", err)
+			}
+			totalNum += num
+
+			decodeUint32 := func(i int) (uint64, error) {
+				var num uint64
+				for range i {
+					_, n, err := leb128.DecodeUint32(br)
+					if err != nil {
+						return 0, err
+					}
+					num += n
+				}
+				return num, nil
+			}
+
+			pc += totalNum
+			num = 0
+			for range catchClauseCount {
+				catchOpCode := body[pc]
+				if num > 0 {
+					totalNum += num
+					pc += num
+					num = 0
+				}
+
+				switch catchOpCode {
+				case OpcodeCatch:
+					// tag, label.
+					if n, err := decodeUint32(2); err != nil {
+						return fmt.Errorf("read catch clause: %w", err)
+					} else {
+						num += n
+					}
+				case OpcodeCatchRef:
+					if err := enabledFeatures.RequireEnabled(api.CoreFeatureReferenceTypes); err != nil {
+						return fmt.Errorf("%s is invalid as %w", OpcodeCatchRefName, err)
+					}
+					// tag label
+					if n, err := decodeUint32(2); err != nil {
+						return fmt.Errorf("read catch_ref clause: %w", err)
+					} else {
+						num += n
+					}
+				case OpcodeCatchAll:
+					// label
+					if n, err := decodeUint32(1); err != nil {
+						return fmt.Errorf("read catch_all clause: %w", err)
+					} else {
+						num += n
+					}
+				case OpcodeCatchAllRef:
+					if err := enabledFeatures.RequireEnabled(api.CoreFeatureReferenceTypes); err != nil {
+						return fmt.Errorf("%s is invalid as %w", OpcodeCatchAllRefName, err)
+					}
+					// label
+					if n, err := decodeUint32(1); err != nil {
+						return fmt.Errorf("read catch_all_ref clause: %w", err)
+					} else {
+						num += n
+					}
+				default:
+					return fmt.Errorf("invalid catch opcode 0x%x", catchOpCode)
+				}
+
+			}
+
+			if num > 0 {
+				totalNum += num
+			}
+
+			pc += num
+			controlBlockStack.push(pc, 0, 0, bt, totalNum, op)
+			if err = valueTypeStack.popParams(op, bt.Params, false); err != nil {
+				return err
+			}
+			// Plus we have to push any block params again.
+			for _, p := range bt.Params {
+				valueTypeStack.push(p)
+			}
+			valueTypeStack.pushStackLimit(len(bt.Params))
+		} else if op == OpcodeThrow {
+			if err := enabledFeatures.RequireEnabled(api.CoreFeatureExceptionHandling); err != nil {
+				return fmt.Errorf("%s invalid as %v", OpcodeThrowName, err)
+			}
+			pc++
+			tagIndex, num, err := leb128.LoadUint32(body[pc:])
+			if err != nil {
+				return fmt.Errorf("read immediate for %s: %v", OpcodeThrowName, err)
+			}
+			pc += num - 1
+
+			if int(tagIndex) >= len(m.TagSection) {
+				return fmt.Errorf("unknown tag %d", tagIndex)
+			}
+
+			tagType := m.TagSection[tagIndex]
+			ft := &m.TypeSection[tagType.TypeIndex]
+
+			for i := len(ft.Params) - 1; i >= 0; i-- {
+				if err := valueTypeStack.popAndVerifyType(ft.Params[i]); err != nil {
+					return fmt.Errorf("type mismatch on %s param type: %v", OpcodeThrowName, err)
+				}
+			}
+			// throw is stack-polymorphic.
+			valueTypeStack.unreachable()
+
 		} else if op == OpcodeUnreachable {
 			// unreachable instruction is stack-polymorphic.
 			valueTypeStack.unreachable()
@@ -2087,6 +2223,17 @@ type valueTypeStack struct {
 	maximumStackPointer int
 	// requireStackValuesTmp is used in requireStackValues function to reduce the allocation.
 	requireStackValuesTmp []ValueType
+}
+
+// TODO1 remove me.
+func debugf(format string, args ...any) {
+	if len(args) == 1 && !strings.Contains(format, "%") {
+		format = format + ": %v"
+	}
+	if !strings.HasSuffix(format, "\n") {
+		format = format + "\n"
+	}
+	fmt.Printf(format, args...)
 }
 
 // Only used in the analyzeFunction below.
@@ -2336,6 +2483,8 @@ func DecodeBlockType(types []FunctionType, r *bytes.Reader, enabledFeatures api.
 		ret = blockType_v_funcref
 	case -17: // 0x6f in original byte = externref
 		ret = blockType_v_externref
+	case -23: // 0x69 in original byte = exnref
+		ret = blockType_v_exnref
 	default:
 		if err = enabledFeatures.RequireEnabled(api.CoreFeatureMultiValue); err != nil {
 			return nil, num, fmt.Errorf("block with function type return invalid as %v", err)
@@ -2358,6 +2507,7 @@ var (
 	blockType_v_v128      = &FunctionType{Results: []ValueType{ValueTypeV128}, ResultNumInUint64: 2}
 	blockType_v_funcref   = &FunctionType{Results: []ValueType{ValueTypeFuncref}, ResultNumInUint64: 1}
 	blockType_v_externref = &FunctionType{Results: []ValueType{ValueTypeExternref}, ResultNumInUint64: 1}
+	blockType_v_exnref    = &FunctionType{Results: []ValueType{ValueTypeExnref}, ResultNumInUint64: 1}
 )
 
 // SplitCallStack returns the input stack resliced to the count of params and

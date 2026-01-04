@@ -37,9 +37,21 @@ type (
 		blockType *wasm.FunctionType
 		// clonedArgs hold the arguments to Else block.
 		clonedArgs ssa.Values
+		// catchClauses holds the catch clauses for try_table blocks.
+		catchClauses []catchClause
 	}
 
 	controlFrameKind byte
+
+	// catchClause represents a catch clause in a try_table block.
+	catchClause struct {
+		// catchType is one of OpcodeCatch, OpcodeCatchRef, OpcodeCatchAll, OpcodeCatchAllRef.
+		catchType byte
+		// tagIndex is the tag index for catch/catch_ref (unused for catch_all variants).
+		tagIndex uint32
+		// labelIndex is the branch target label index.
+		labelIndex uint32
+	}
 )
 
 // String implements fmt.Stringer for debugging.
@@ -65,6 +77,7 @@ const (
 	controlFrameKindIfWithElse
 	controlFrameKindIfWithoutElse
 	controlFrameKindBlock
+	controlFrameKindTryTable
 )
 
 // String implements fmt.Stringer for debugging.
@@ -80,6 +93,8 @@ func (k controlFrameKind) String() string {
 		return "if_without_else"
 	case controlFrameKindBlock:
 		return "block"
+	case controlFrameKindTryTable:
+		return "try_table"
 	default:
 		panic(k)
 	}
@@ -1442,6 +1457,21 @@ func (c *Compiler) lowerCurrentOpcode() {
 		followingBlk := ctrl.followingBlock
 
 		unreachable := state.unreachable
+
+		// For try_table, call the exit trampoline BEFORE the jump.
+		if ctrl.kind == controlFrameKindTryTable && !unreachable {
+			c.storeCallerModuleContext()
+			tryTableExitPtr := builder.AllocateInstruction().
+				AsLoad(c.execCtxPtrValue,
+					wazevoapi.ExecutionContextOffsetTryTableExitTrampolineAddress.U32(),
+					ssa.TypeI64,
+				).Insert(builder).Return()
+			args := c.allocateVarLengthValues(1, c.execCtxPtrValue)
+			builder.AllocateInstruction().
+				AsCallIndirect(tryTableExitPtr, &c.tryTableExitSig, args).
+				Insert(builder)
+		}
+
 		if !unreachable {
 			// Top n-th args will be used as a result of the current control frame.
 			args := c.nPeekDup(len(ctrl.blockType.Results))
@@ -1464,6 +1494,8 @@ func (c *Compiler) lowerCurrentOpcode() {
 			elseBlk := ctrl.blk
 			builder.SetCurrentBlock(elseBlk)
 			c.insertJumpToBlock(ctrl.clonedArgs, followingBlk)
+		case controlFrameKindTryTable:
+			// Exit trampoline already called above.
 		}
 
 		builder.Seal(followingBlk)
@@ -3410,6 +3442,242 @@ func (c *Compiler) lowerCurrentOpcode() {
 		}
 		c.lowerTailCallReturnCall(fnIndex)
 		state.unreachable = true
+	case wasm.OpcodeThrow:
+		tagIndex := c.readI32u()
+		if state.unreachable {
+			break
+		}
+		state.unreachable = true
+
+		c.storeCallerModuleContext()
+
+		// Get the tag type to know how many values to store.
+		tag := c.m.TagSection[tagIndex]
+		tagType := &c.m.TypeSection[tag.TypeIndex]
+
+		// Pop exception values from the stack and store them in the execution context.
+		// Values are stored in reverse order so they can be popped in the correct order by the catch handler.
+		for i := len(tagType.Params) - 1; i >= 0; i-- {
+			val := state.pop()
+			offset := wazevoapi.ExecutionContextOffsetExceptionValuesBegin.U32() + uint32(i)*8
+			builder.AllocateInstruction().
+				AsStore(ssa.OpcodeStore, val, c.execCtxPtrValue, offset).
+				Insert(builder)
+		}
+
+		tagIndexVal := builder.AllocateInstruction().AsIconst32(tagIndex).Insert(builder).Return()
+
+		throwPtr := builder.AllocateInstruction().
+			AsLoad(c.execCtxPtrValue,
+				wazevoapi.ExecutionContextOffsetThrowTrampolineAddress.U32(),
+				ssa.TypeI64,
+			).Insert(builder).Return()
+
+		args := c.allocateVarLengthValues(2, c.execCtxPtrValue, tagIndexVal)
+		builder.AllocateInstruction().
+			AsCallIndirect(throwPtr, &c.throwSig, args).
+			Insert(builder)
+
+		// The throw trampoline never returns - add a terminating instruction.
+		// This code path is unreachable but needed for SSA block termination.
+		exit := builder.AllocateInstruction()
+		exit.AsExitWithCode(c.execCtxPtrValue, wazevoapi.ExitCodeUnreachable)
+		builder.InsertInstruction(exit)
+	case wasm.OpcodeTryTable:
+		bt := c.readBlockType()
+		catchClauseCount := c.readI32u()
+
+		// Parse catch clauses.
+		var catchClauses []catchClause
+		for i := uint32(0); i < catchClauseCount; i++ {
+			catchType := c.readByte()
+			var tagIndex, labelIndex uint32
+			switch catchType {
+			case wasm.OpcodeCatch, wasm.OpcodeCatchRef:
+				tagIndex = c.readI32u()
+				labelIndex = c.readI32u()
+			case wasm.OpcodeCatchAll, wasm.OpcodeCatchAllRef:
+				labelIndex = c.readI32u()
+			}
+			catchClauses = append(catchClauses, catchClause{
+				catchType:  catchType,
+				tagIndex:   tagIndex,
+				labelIndex: labelIndex,
+			})
+		}
+
+		if state.unreachable {
+			state.unreachableDepth++
+			break
+		}
+
+		afterBlock := builder.AllocateBasicBlock()
+		c.addBlockParamsFromWasmTypes(bt.Results, afterBlock)
+
+		// Create the try body block.
+		tryBodyBlock := builder.AllocateBasicBlock()
+
+		// Call try_table enter trampoline to save state.
+		c.storeCallerModuleContext()
+		tryTableIndexVal := builder.AllocateInstruction().AsIconst32(uint32(len(state.controlFrames))).Insert(builder).Return()
+		tryTableEnterPtr := builder.AllocateInstruction().
+			AsLoad(c.execCtxPtrValue,
+				wazevoapi.ExecutionContextOffsetTryTableEnterTrampolineAddress.U32(),
+				ssa.TypeI64,
+			).Insert(builder).Return()
+		args := c.allocateVarLengthValues(2, c.execCtxPtrValue, tryTableIndexVal)
+		builder.AllocateInstruction().
+			AsCallIndirect(tryTableEnterPtr, &c.tryTableEnterSig, args).
+			Insert(builder)
+
+		// Check if we have any catch clauses that can handle exceptions.
+		if len(catchClauses) > 0 {
+			// After try_table_enter returns, check if there's a pending exception.
+			pendingTagVal := builder.AllocateInstruction().
+				AsLoad(c.execCtxPtrValue,
+					wazevoapi.ExecutionContextOffsetPendingExceptionTagIndex.U32(),
+					ssa.TypeI32,
+				).Insert(builder).Return()
+
+			// Compare with 0xFFFFFFFF (no pending exception).
+			noExceptionVal := builder.AllocateInstruction().AsIconst32(0xFFFFFFFF).Insert(builder).Return()
+			hasPendingException := builder.AllocateInstruction().
+				AsIcmp(pendingTagVal, noExceptionVal, ssa.IntegerCmpCondNotEqual).
+				Insert(builder).Return()
+
+			// Create a dispatch block.
+			catchDispatchBlock := builder.AllocateBasicBlock()
+
+			// Branch to catch dispatch if there's a pending exception.
+			builder.AllocateInstruction().
+				AsBrnz(hasPendingException, ssa.ValuesNil, catchDispatchBlock).
+				Insert(builder)
+			c.insertJumpToBlock(ssa.ValuesNil, tryBodyBlock)
+
+			// Emit the catch dispatch block.
+			builder.SetCurrentBlock(catchDispatchBlock)
+			builder.Seal(catchDispatchBlock)
+
+			// Load the pending tag index before clearing (needed for exnref in catch_ref/catch_all_ref).
+			savedTagIndex := builder.AllocateInstruction().
+				AsLoad(c.execCtxPtrValue,
+					wazevoapi.ExecutionContextOffsetPendingExceptionTagIndex.U32(),
+					ssa.TypeI32,
+				).Insert(builder).Return()
+
+			// Clear pendingExceptionTagIndex.
+			noExceptionConst := builder.AllocateInstruction().AsIconst32(0xFFFFFFFF).Insert(builder).Return()
+			builder.AllocateInstruction().
+				AsStore(ssa.OpcodeStore, noExceptionConst, c.execCtxPtrValue, wazevoapi.ExecutionContextOffsetPendingExceptionTagIndex.U32()).
+				Insert(builder)
+
+			// Branch to the first catch handler's target.
+			// TODO: implement proper tag matching for catch vs catch_all.
+			firstCatch := catchClauses[0]
+			targetFrame := state.controlFrames[len(state.controlFrames)-1-int(firstCatch.labelIndex)]
+			catchTarget := targetFrame.followingBlock
+
+			// Determine the number of parameters needed for the target block.
+			var catchArgs ssa.Values
+			if firstCatch.catchType == wasm.OpcodeCatch || firstCatch.catchType == wasm.OpcodeCatchRef {
+				tag := c.m.TagSection[firstCatch.tagIndex]
+				tagType := &c.m.TypeSection[tag.TypeIndex]
+
+				// Load exception values from the execution context.
+				numArgs := len(tagType.Params)
+				if firstCatch.catchType == wasm.OpcodeCatchRef {
+					numArgs++ // +1 for exnref
+				}
+				argVals := make([]ssa.Value, numArgs)
+				for j, paramType := range tagType.Params {
+					offset := wazevoapi.ExecutionContextOffsetExceptionValuesBegin.U32() + uint32(j)*8
+					var ssaType ssa.Type
+					switch paramType {
+					case wasm.ValueTypeI32:
+						ssaType = ssa.TypeI32
+					case wasm.ValueTypeI64:
+						ssaType = ssa.TypeI64
+					case wasm.ValueTypeF32:
+						ssaType = ssa.TypeF32
+					case wasm.ValueTypeF64:
+						ssaType = ssa.TypeF64
+					default:
+						ssaType = ssa.TypeI64
+					}
+					argVals[j] = builder.AllocateInstruction().
+						AsLoad(c.execCtxPtrValue, offset, ssaType).
+						Insert(builder).Return()
+				}
+				// For catch_ref, also pass the exnref (saved tag index as i64).
+				if firstCatch.catchType == wasm.OpcodeCatchRef {
+					// Convert i32 tag index to i64 for exnref.
+					exnref := builder.AllocateInstruction().
+						AsUExtend(savedTagIndex, 32, 64).
+						Insert(builder).Return()
+					argVals[len(tagType.Params)] = exnref
+				}
+				catchArgs = c.allocateVarLengthValues(len(argVals), argVals...)
+			} else if firstCatch.catchType == wasm.OpcodeCatchAllRef {
+				// For catch_all_ref, pass only the exnref (saved tag index as i64).
+				exnref := builder.AllocateInstruction().
+					AsUExtend(savedTagIndex, 32, 64).
+					Insert(builder).Return()
+				catchArgs = c.allocateVarLengthValues(1, exnref)
+			} else {
+				catchArgs = ssa.ValuesNil
+			}
+
+			c.insertJumpToBlock(catchArgs, catchTarget)
+		} else {
+			// No catch clauses, just continue to try body.
+			c.insertJumpToBlock(ssa.ValuesNil, tryBodyBlock)
+		}
+
+		// Continue generating code in the try body block.
+		builder.SetCurrentBlock(tryBodyBlock)
+		builder.Seal(tryBodyBlock)
+
+		originalLen := len(state.values) - len(bt.Params)
+		state.ctrlPush(controlFrame{
+			originalStackLenWithoutParam: originalLen,
+			kind:                         controlFrameKindTryTable,
+			followingBlock:               afterBlock,
+			blockType:                    bt,
+			catchClauses:                 catchClauses,
+		})
+
+	case wasm.OpcodeThrowRef:
+		if state.unreachable {
+			break
+		}
+		state.unreachable = true
+
+		// Pop the exnref (which contains the tag index as i64).
+		exnref := state.pop()
+
+		c.storeCallerModuleContext()
+
+		// Extract the tag index from exnref (truncate i64 to i32).
+		tagIndexVal := builder.AllocateInstruction().
+			AsIreduce(exnref, ssa.TypeI32).
+			Insert(builder).Return()
+
+		// Load the throw trampoline address and call it.
+		throwPtr := builder.AllocateInstruction().
+			AsLoad(c.execCtxPtrValue,
+				wazevoapi.ExecutionContextOffsetThrowTrampolineAddress.U32(),
+				ssa.TypeI64,
+			).Insert(builder).Return()
+
+		args := c.allocateVarLengthValues(2, c.execCtxPtrValue, tagIndexVal)
+		builder.AllocateInstruction().
+			AsCallIndirect(throwPtr, &c.throwSig, args).
+			Insert(builder)
+
+		// The throw trampoline never returns - add a terminating instruction.
+		exit := builder.AllocateInstruction()
+		exit.AsExitWithCode(c.execCtxPtrValue, wazevoapi.ExitCodeUnreachable)
+		builder.InsertInstruction(exit)
 
 	default:
 		panic("TODO: unsupported in wazevo yet: " + wasm.InstructionName(op))

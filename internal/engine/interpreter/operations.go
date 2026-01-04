@@ -449,6 +449,14 @@ func (o operationKind) String() (ret string) {
 		ret = "operationKindTailCallReturnCall"
 	case operationKindTailCallReturnCallIndirect:
 		ret = "operationKindTailCallReturnCallIndirect"
+	case operationKindThrow:
+		ret = "operationKindThrow"
+	case operationKindThrowRef:
+		ret = "operationKindThrowRef"
+	case operationKindTryTableEnter:
+		ret = "operationKindTryTableEnter"
+	case operationKindTryTableExit:
+		ret = "operationKindTryTableExit"
 	default:
 		panic(fmt.Errorf("unknown operation %d", o))
 	}
@@ -776,6 +784,15 @@ const (
 	operationKindTailCallReturnCall
 	// operationKindTailCallReturnCallIndirect is the Kind for newOperationKindTailCallReturnCallIndirect.
 	operationKindTailCallReturnCallIndirect
+
+	// operationKindThrow is the Kind for newOperationThrow.
+	operationKindThrow
+	// operationKindThrowRef is the Kind for newOperationThrowRef.
+	operationKindThrowRef
+	// operationKindTryTableEnter is the Kind for newOperationTryTableEnter.
+	operationKindTryTableEnter
+	// operationKindTryTableExit is the Kind for newOperationTryTableExit.
+	operationKindTryTableExit
 
 	// operationKindEnd is always placed at the bottom of this iota definition to be used in the test.
 	operationKindEnd
@@ -1111,6 +1128,16 @@ func (o unionOperation) String() string {
 
 	case operationKindTailCallReturnCallIndirect:
 		return fmt.Sprintf("%s %d %d", o.Kind, o.U1, o.U2)
+
+	case operationKindThrow:
+		return fmt.Sprintf("%s %d", o.Kind, o.U1)
+
+	case operationKindThrowRef,
+		operationKindTryTableExit:
+		return o.Kind.String()
+
+	case operationKindTryTableEnter:
+		return fmt.Sprintf("%s (catches=%d)", o.Kind, len(o.Us)/5)
 
 	default:
 		panic(fmt.Sprintf("TODO: %v", o.Kind))
@@ -2842,4 +2869,50 @@ func newOperationTailCallReturnCall(functionIndex uint32) unionOperation {
 //	wasm.OpcodeTailCallReturnCallIndirect.
 func newOperationTailCallReturnCallIndirect(typeIndex, tableIndex uint32, dropDepth inclusiveRange, l label) unionOperation {
 	return unionOperation{Kind: operationKindTailCallReturnCallIndirect, U1: uint64(typeIndex), U2: uint64(tableIndex), Us: []uint64{dropDepth.AsU64(), uint64(l)}}
+}
+
+func newOperationThrow(typeIndex uint32) unionOperation {
+	return unionOperation{Kind: operationKindThrow, U1: uint64(typeIndex)}
+}
+
+func newOperationThrowRef() unionOperation {
+	return unionOperation{Kind: operationKindThrowRef}
+}
+
+// catchClause represents a single catch handler in a try_table block.
+type catchClause struct {
+	// catchType is the catch opcode type (catch, catch_ref, catch_all, catch_all_ref).
+	catchType byte
+	// tagIndex is the tag index for catch/catch_ref (unused for catch_all/catch_all_ref).
+	tagIndex uint32
+	// targetPC is the resolved address to jump to when this catch matches.
+	targetPC uint64
+	// stackDepth is the stack size at the target label.
+	stackDepth int
+	// pushExnref indicates if this handler pushes an exnref (catch_ref, catch_all_ref).
+	pushExnref bool
+}
+
+// newOperationTryTableEnter creates an operation that sets up catch handlers for a try_table block.
+// The catch handlers are stored in the Us slice.
+func newOperationTryTableEnter(catches []catchClause) unionOperation {
+	// Encode catch clauses into Us slice.
+	// Each clause needs 5 uint64s: catchType, tagIndex, targetPC, stackDepth, pushExnref.
+	us := make([]uint64, len(catches)*5)
+	for i, c := range catches {
+		base := i * 5
+		us[base+0] = uint64(c.catchType)
+		us[base+1] = uint64(c.tagIndex)
+		us[base+2] = c.targetPC
+		us[base+3] = uint64(c.stackDepth)
+		if c.pushExnref {
+			us[base+4] = 1
+		}
+	}
+	return unionOperation{Kind: operationKindTryTableEnter, Us: us}
+}
+
+// newOperationTryTableExit creates an operation that removes catch handlers when exiting a try_table block.
+func newOperationTryTableExit() unionOperation {
+	return unionOperation{Kind: operationKindTryTableExit}
 }

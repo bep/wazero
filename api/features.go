@@ -144,6 +144,19 @@ const (
 	// See https://github.com/WebAssembly/spec/blob/wg-2.0.draft1/proposals/simd/SIMD.md
 	CoreFeatureSIMD
 
+	// CoreFeatureExceptionHandling enables exception handling instructions
+	// ("exception-handling").
+	//
+	// Adds instructions:
+	//   - `try`
+	//   - `catch`
+	//   - `throw`
+	//   - `rethrow`
+	// Adds a new section "tag" for tags.
+	//
+	// See https://github.com/WebAssembly/exception-handling/blob/main/proposals/exception-handling/Overview.md
+	CoreFeatureExceptionHandling
+
 	// Update experimental/features.go when adding elements here.
 )
 
@@ -209,6 +222,9 @@ func featureName(f CoreFeatures) string {
 	case CoreFeatureSIMD:
 		// match https://github.com/WebAssembly/spec/blob/wg-2.0.draft1/proposals/simd/SIMD.md
 		return "simd"
+	case CoreFeatureExceptionHandling:
+		// match https://github.com/WebAssembly/exception-handling/blob/main/proposals/exception-handling/Overview.md
+		return "exception-handling"
 	}
 	return ""
 }

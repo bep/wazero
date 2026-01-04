@@ -1619,7 +1619,7 @@ blk0: (exec_ctx:i64, module_ctx:i64, v2:v128, v3:v128)
 			features: api.CoreFeaturesV2 | experimental.CoreFeaturesThreads,
 			exp: `
 signatures:
-	sig6: i64i64i32i64_i32
+	sig9: i64i64i32i64_i32
 
 blk0: (exec_ctx:i64, module_ctx:i64, v2:i32, v3:i32, v4:i64)
 	Store module_ctx, exec_ctx, 0x8
@@ -1641,7 +1641,7 @@ blk0: (exec_ctx:i64, module_ctx:i64, v2:i32, v3:i32, v4:i64)
 	v19:i32 = Icmp neq, v17, v18
 	ExitIfTrue v19, exec_ctx, unaligned_atomic
 	v20:i64 = Load exec_ctx, 0x488
-	v21:i32 = CallIndirect v20:sig6, exec_ctx, v4, v3, v15
+	v21:i32 = CallIndirect v20:sig9, exec_ctx, v4, v3, v15
 	Jump blk_ret, v21
 `,
 		},
@@ -1651,7 +1651,7 @@ blk0: (exec_ctx:i64, module_ctx:i64, v2:i32, v3:i32, v4:i64)
 			features: api.CoreFeaturesV2 | experimental.CoreFeaturesThreads,
 			exp: `
 signatures:
-	sig7: i64i64i64i64_i32
+	sig10: i64i64i64i64_i32
 
 blk0: (exec_ctx:i64, module_ctx:i64, v2:i32, v3:i64, v4:i64)
 	Store module_ctx, exec_ctx, 0x8
@@ -1673,7 +1673,7 @@ blk0: (exec_ctx:i64, module_ctx:i64, v2:i32, v3:i64, v4:i64)
 	v19:i32 = Icmp neq, v17, v18
 	ExitIfTrue v19, exec_ctx, unaligned_atomic
 	v20:i64 = Load exec_ctx, 0x490
-	v21:i32 = CallIndirect v20:sig7, exec_ctx, v4, v3, v15
+	v21:i32 = CallIndirect v20:sig10, exec_ctx, v4, v3, v15
 	Jump blk_ret, v21
 `,
 		},
@@ -1683,7 +1683,7 @@ blk0: (exec_ctx:i64, module_ctx:i64, v2:i32, v3:i64, v4:i64)
 			features: api.CoreFeaturesV2 | experimental.CoreFeaturesThreads,
 			exp: `
 signatures:
-	sig8: i64i32i64_i32
+	sig11: i64i32i64_i32
 
 blk0: (exec_ctx:i64, module_ctx:i64, v2:i32, v3:i32)
 	Store module_ctx, exec_ctx, 0x8
@@ -1705,7 +1705,7 @@ blk0: (exec_ctx:i64, module_ctx:i64, v2:i32, v3:i32)
 	v18:i32 = Icmp neq, v16, v17
 	ExitIfTrue v18, exec_ctx, unaligned_atomic
 	v19:i64 = Load exec_ctx, 0x498
-	v20:i32 = CallIndirect v19:sig8, exec_ctx, v3, v14
+	v20:i32 = CallIndirect v19:sig11, exec_ctx, v3, v14
 	Jump blk_ret, v20
 `,
 		},
@@ -3091,10 +3091,13 @@ func TestCompiler_declareSignatures(t *testing.T) {
 			{ID: 5, Params: []ssa.Type{ssa.TypeI64}},
 			{ID: 6, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32, ssa.TypeI32, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
 			{ID: 7, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32}, Results: []ssa.Type{ssa.TypeI64}},
-			{ID: 8, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI64}},
-			{ID: 9, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI32, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
-			{ID: 10, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI64, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
-			{ID: 11, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
+			{ID: 8, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32}},              // throwSig
+			{ID: 9, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32}},              // tryTableEnterSig
+			{ID: 10, Params: []ssa.Type{ssa.TypeI64}},                          // tryTableExitSig
+			{ID: 11, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI64}},
+			{ID: 12, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI32, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
+			{ID: 13, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI64, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
+			{ID: 14, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
 		}
 
 		require.Equal(t, len(expected), len(declaredSigs))
@@ -3130,10 +3133,13 @@ func TestCompiler_declareSignatures(t *testing.T) {
 			{ID: 13, Params: []ssa.Type{ssa.TypeI64}},
 			{ID: 14, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32, ssa.TypeI32, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
 			{ID: 15, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32}, Results: []ssa.Type{ssa.TypeI64}},
-			{ID: 16, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI64}},
-			{ID: 17, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI32, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
-			{ID: 18, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI64, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
-			{ID: 19, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
+			{ID: 16, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32}},              // throwSig
+			{ID: 17, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32}},              // tryTableEnterSig
+			{ID: 18, Params: []ssa.Type{ssa.TypeI64}},                           // tryTableExitSig
+			{ID: 19, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI64}},
+			{ID: 20, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI32, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
+			{ID: 21, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI64, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
+			{ID: 22, Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32, ssa.TypeI64}, Results: []ssa.Type{ssa.TypeI32}},
 		}
 		require.Equal(t, len(expected), len(declaredSigs))
 		for i := 0; i < len(declaredSigs); i++ {

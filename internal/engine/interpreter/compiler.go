@@ -21,6 +21,7 @@ const (
 	controlFrameKindLoop
 	controlFrameKindIfWithElse
 	controlFrameKindIfWithoutElse
+	controlFrameKindTryTable
 )
 
 type (
@@ -58,6 +59,8 @@ func (c *controlFrame) asLabel() label {
 		return newLabel(labelKindReturn, 0)
 	case controlFrameKindIfWithElse,
 		controlFrameKindIfWithoutElse:
+		return newLabel(labelKindContinuation, c.frameID)
+	case controlFrameKindTryTable:
 		return newLabel(labelKindContinuation, c.frameID)
 	}
 	panic(fmt.Sprintf("unreachable: a bug in interpreterir implementation: %v", c.kind))
@@ -396,6 +399,11 @@ func (c *compiler) compile(sig *wasm.FunctionType, body []byte, localTypes []was
 	return nil
 }
 
+// TODO1 remove me.
+func debugf(format string, a ...interface{}) {
+	fmt.Printf(format+"\n", a...)
+}
+
 // Translate the current Wasm instruction to interpreterir's operations,
 // and emit the results into c.results.
 func (c *compiler) handleInstruction() error {
@@ -677,6 +685,14 @@ operatorSwitch:
 			c.emit(
 				dropOp,
 			)
+		case controlFrameKindTryTable:
+			// For try_table, we emit TryTableExit to pop catch handlers, then handle like a block.
+			continuationLabel := newLabel(labelKindContinuation, frame.frameID)
+			c.result.LabelCallers[continuationLabel]++
+			c.emit(newOperationTryTableExit())
+			c.emit(dropOp)
+			c.emit(newOperationBr(continuationLabel))
+			c.emit(newOperationLabel(continuationLabel))
 		default:
 			// Should never happen. If so, there's a bug in the translation.
 			panic(fmt.Errorf("bug: invalid control frame Kind: 0x%x", frame.kind))
@@ -3463,6 +3479,97 @@ operatorSwitch:
 		// and can be safely removed.
 		c.markUnreachable()
 
+	case wasm.OpcodeThrow:
+		tagIndex := index
+		c.emit(newOperationThrow(tagIndex))
+		c.markUnreachable()
+
+	case wasm.OpcodeThrowRef:
+		c.emit(newOperationThrowRef())
+		c.markUnreachable()
+
+	case wasm.OpcodeTryTable:
+		c.br.Reset(c.body[c.pc+1:])
+		bt, num, err := wasm.DecodeBlockType(c.types, c.br, c.enabledFeatures)
+		if err != nil {
+			return fmt.Errorf("reading block type for try_table instruction: %w", err)
+		}
+		c.pc += num
+
+		// Read the number of catch clauses.
+		numCatchClauses, n, err := leb128.DecodeUint32(c.br)
+		if err != nil {
+			return fmt.Errorf("reading number of catch clauses: %w", err)
+		}
+		c.pc += uint64(n)
+
+		// Parse catch clauses.
+		var catches []catchClause
+		for i := uint32(0); i < numCatchClauses; i++ {
+			catchType, err := c.br.ReadByte()
+			if err != nil {
+				return fmt.Errorf("reading catch type: %w", err)
+			}
+			c.pc++
+
+			var tagIndex, labelIndex uint32
+			switch catchType {
+			case wasm.OpcodeCatch, wasm.OpcodeCatchRef:
+				// Read tag index.
+				tagIndex, n, err = leb128.DecodeUint32(c.br)
+				if err != nil {
+					return fmt.Errorf("reading tag index: %w", err)
+				}
+				c.pc += uint64(n)
+				// Read label index.
+				labelIndex, n, err = leb128.DecodeUint32(c.br)
+				if err != nil {
+					return fmt.Errorf("reading label index: %w", err)
+				}
+				c.pc += uint64(n)
+			case wasm.OpcodeCatchAll, wasm.OpcodeCatchAllRef:
+				// Read label index only.
+				labelIndex, n, err = leb128.DecodeUint32(c.br)
+				if err != nil {
+					return fmt.Errorf("reading label index: %w", err)
+				}
+				c.pc += uint64(n)
+			}
+
+			if !c.unreachableState.on {
+				// Get target frame for this catch.
+				targetFrame := c.controlFrames.get(int(labelIndex))
+				targetFrame.ensureContinuation()
+				targetLabel := targetFrame.asLabel()
+				c.result.LabelCallers[targetLabel]++
+
+				catches = append(catches, catchClause{
+					catchType:  catchType,
+					tagIndex:   tagIndex,
+					targetPC:   uint64(targetLabel), // Will be resolved later
+					stackDepth: targetFrame.originalStackLenWithoutParamUint64,
+					pushExnref: catchType == wasm.OpcodeCatchRef || catchType == wasm.OpcodeCatchAllRef,
+				})
+			}
+		}
+
+		if c.unreachableState.on {
+			c.unreachableState.depth++
+			break operatorSwitch
+		}
+
+		// Emit TryTableEnter with catch handlers.
+		c.emit(newOperationTryTableEnter(catches))
+
+		frame := controlFrame{
+			frameID:                            c.nextFrameID(),
+			originalStackLenWithoutParam:       len(c.stack) - len(bt.Params),
+			originalStackLenWithoutParamUint64: c.stackLenInUint64 - bt.ParamNumInUint64,
+			kind:                               controlFrameKindTryTable,
+			blockType:                          bt,
+		}
+		c.controlFrames.push(frame)
+
 	default:
 		return fmt.Errorf("unsupported instruction in interpreterir: 0x%x", op)
 	}
@@ -3492,7 +3599,9 @@ func (c *compiler) applyToStack(opcode wasm.Opcode) (index uint32, err error) {
 		wasm.OpcodeGlobalSet,
 		// tail-call proposal
 		wasm.OpcodeTailCallReturnCall,
-		wasm.OpcodeTailCallReturnCallIndirect:
+		wasm.OpcodeTailCallReturnCallIndirect,
+		// exception handling
+		wasm.OpcodeThrow:
 		// Assumes that we are at the opcode now so skip it before read immediates.
 		v, num, err := leb128.LoadUint32(c.body[c.pc+1:])
 		if err != nil {
@@ -3605,7 +3714,7 @@ func (c *compiler) emitDefaultValue(t wasm.ValueType) {
 	case wasm.ValueTypeI32:
 		c.stackPush(unsignedTypeI32)
 		c.emit(newOperationConstI32(0))
-	case wasm.ValueTypeI64, wasm.ValueTypeExternref, wasm.ValueTypeFuncref:
+	case wasm.ValueTypeI64, wasm.ValueTypeExternref, wasm.ValueTypeFuncref, wasm.ValueTypeExnref:
 		c.stackPush(unsignedTypeI64)
 		c.emit(newOperationConstI64(0))
 	case wasm.ValueTypeF32:

@@ -472,6 +472,16 @@ func (c *compiler) wasmOpcodeSignature(op wasm.Opcode, index uint32) (*signature
 	case wasm.OpcodeRefNull:
 		// ref.null is translated as i64.const 0.
 		return signature_None_I64, nil
+	case wasm.OpcodeThrow:
+		// throw pops exception values based on the tag type.
+		// The signature is dynamically computed based on the tag index.
+		return c.throwSignature(index)
+	case wasm.OpcodeThrowRef:
+		// throw_ref pops an exnref (i64) and re-throws.
+		return signature_I64_None, nil
+	case wasm.OpcodeTryTable:
+		// try_table is a control flow instruction.
+		return signature_None_None, nil
 	case wasm.OpcodeMiscPrefix:
 		switch miscOp := c.body[c.pc+1]; miscOp {
 		case wasm.OpcodeMiscI32TruncSatF32S, wasm.OpcodeMiscI32TruncSatF32U:
@@ -700,7 +710,7 @@ func wasmValueTypeTounsignedType(vt wasm.ValueType) unsignedType {
 		return unsignedTypeI32
 	case wasm.ValueTypeI64,
 		// From interpreterir layer, ref type values are opaque 64-bit pointers.
-		wasm.ValueTypeExternref, wasm.ValueTypeFuncref:
+		wasm.ValueTypeExternref, wasm.ValueTypeFuncref, wasm.ValueTypeExnref:
 		return unsignedTypeI64
 	case wasm.ValueTypeF32:
 		return unsignedTypeF32
@@ -718,7 +728,7 @@ func wasmValueTypeToUnsignedOutSignature(vt wasm.ValueType) *signature {
 		return signature_None_I32
 	case wasm.ValueTypeI64,
 		// From interpreterir layer, ref type values are opaque 64-bit pointers.
-		wasm.ValueTypeExternref, wasm.ValueTypeFuncref:
+		wasm.ValueTypeExternref, wasm.ValueTypeFuncref, wasm.ValueTypeExnref:
 		return signature_None_I64
 	case wasm.ValueTypeF32:
 		return signature_None_F32
@@ -736,7 +746,7 @@ func wasmValueTypeToUnsignedInSignature(vt wasm.ValueType) *signature {
 		return signature_I32_None
 	case wasm.ValueTypeI64,
 		// From interpreterir layer, ref type values are opaque 64-bit pointers.
-		wasm.ValueTypeExternref, wasm.ValueTypeFuncref:
+		wasm.ValueTypeExternref, wasm.ValueTypeFuncref, wasm.ValueTypeExnref:
 		return signature_I64_None
 	case wasm.ValueTypeF32:
 		return signature_F32_None
@@ -746,6 +756,18 @@ func wasmValueTypeToUnsignedInSignature(vt wasm.ValueType) *signature {
 		return signature_V128_None
 	}
 	panic("unreachable")
+}
+
+// throwSignature returns the signature for the throw instruction based on the tag index.
+func (c *compiler) throwSignature(tagIndex uint32) (*signature, error) {
+	tag := c.module.TagSection[tagIndex]
+	tagType := &c.types[tag.TypeIndex]
+	sig := &signature{}
+	for _, vt := range tagType.Params {
+		sig.in = append(sig.in, wasmValueTypeTounsignedType(vt))
+	}
+	// throw has no output (it's unreachable after)
+	return sig, nil
 }
 
 func wasmValueTypeToUnsignedInOutSignature(vt wasm.ValueType) *signature {

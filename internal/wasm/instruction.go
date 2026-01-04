@@ -20,7 +20,8 @@ const (
 	// OpcodeElse brackets a sequence of instructions enclosed by an OpcodeIf. A branch instruction on a then label
 	// breaks out to after the OpcodeEnd on the enclosing OpcodeIf.
 	OpcodeElse Opcode = 0x05
-	// OpcodeEnd terminates a control instruction OpcodeBlock, OpcodeLoop or OpcodeIf.
+
+	// OpcodeEnd terminates a control instruction OpcodeBlock, OpcodeLoop or OpcodeIf. TODO1
 	OpcodeEnd Opcode = 0x0b
 
 	// OpcodeBr is a stack-polymorphic opcode that performs an unconditional branch. How the stack is modified depends
@@ -241,7 +242,7 @@ const (
 	OpcodeRefNull = 0xd0
 	// OpcodeRefIsNull pops a reference value, and pushes 1 if it is null, 0 otherwise.
 	// This is defined in the reference-types proposal, but necessary for CoreFeatureBulkMemoryOperations as well.
-	//
+	// 69
 	// Currently not supported.
 	OpcodeRefIsNull = 0xd1
 	// OpcodeRefFunc pushes a funcref value whose index equals the immediate to this opcode.
@@ -787,6 +788,22 @@ const (
 	OpcodeTailCallReturnCallIndirect OpcodeTailCall = 0x13
 )
 
+// TODO1 toggle.
+type OpcodeExceptionHandling = byte
+
+const (
+	// try-catch-throw instructions are from the exception-handling proposal.
+	// https://github.com/WebAssembly/spec/blob/wasm-3.0/proposals/exception-handling/Exceptions.md */
+	OpcodeTryTable    OpcodeExceptionHandling = 0x1f
+	OpcodeThrow       OpcodeExceptionHandling = 0x08
+	OpcodeThrowRef    OpcodeExceptionHandling = 0x0a
+	OpcodeCatch       OpcodeExceptionHandling = 0x00
+	OpcodeCatchRef    OpcodeExceptionHandling = 0x01
+	OpcodeCatchAll    OpcodeExceptionHandling = 0x02
+	OpcodeCatchAllRef OpcodeExceptionHandling = 0x03
+	OpcodeExnRef      OpcodeExceptionHandling = 0x69 // -0x17
+)
+
 const (
 	OpcodeUnreachableName       = "unreachable"
 	OpcodeNopName               = "nop"
@@ -1179,7 +1196,10 @@ var instructionNames = [256]string{
 // InstructionName returns the instruction corresponding to this binary Opcode.
 // See https://www.w3.org/TR/2019/REC-wasm-core-1-20191205/#a7-index-of-instructions
 func InstructionName(oc Opcode) string {
-	return instructionNames[oc]
+	if s := instructionNames[oc]; s != "" {
+		return s
+	}
+	return ExceptionHandlingInstructionName(oc)
 }
 
 const (
@@ -1888,4 +1908,31 @@ var tailCallInstructionName = map[OpcodeTailCall]string{
 // TailCallInstructionName returns the instruction name corresponding to the tail call Opcode.
 func TailCallInstructionName(oc OpcodeTailCall) (ret string) {
 	return tailCallInstructionName[oc]
+}
+
+const (
+	OpcodeCatchAllName    = "catch_all"
+	OpcodeCatchAllRefName = "catch_all_ref"
+	OpcodeCatchName       = "catch"
+	OpcodeCatchRefName    = "catch_ref"
+	OpcodeExnRefName      = "exn_ref"
+	OpcodeThrowName       = "throw"
+	OpcodeThrowRefName    = "throw_ref"
+	OpcodeTryTableName    = "try_table"
+)
+
+var exceptionHandlingInstructionName = map[OpcodeExceptionHandling]string{
+	OpcodeTryTable:    OpcodeTryTableName,
+	OpcodeThrow:       OpcodeThrowName,
+	OpcodeThrowRef:    OpcodeThrowRefName,
+	OpcodeExnRef:      OpcodeExnRefName,
+	OpcodeCatch:       OpcodeCatchName,
+	OpcodeCatchRef:    OpcodeCatchRefName,
+	OpcodeCatchAll:    OpcodeCatchAllName,
+	OpcodeCatchAllRef: OpcodeCatchAllRefName,
+}
+
+// ExceptionHandlingInstructionName returns the instruction name corresponding to the exception handling Opcode.
+func ExceptionHandlingInstructionName(oc OpcodeExceptionHandling) (ret string) {
+	return exceptionHandlingInstructionName[oc]
 }

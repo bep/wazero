@@ -16,3 +16,6 @@ const CoreFeaturesThreads = api.CoreFeatureSIMD << 1
 
 // CoreFeaturesThreads enables tail call instructions ("tail-call").
 const CoreFeaturesTailCall = api.CoreFeatureSIMD << 2
+
+// CoreFeatureExceptionHandling enables exception handling instructions ("exception-handling").
+const CoreFeatureExceptionHandling = api.CoreFeatureSIMD << 3

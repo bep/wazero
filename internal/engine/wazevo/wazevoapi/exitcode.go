@@ -30,6 +30,9 @@ const (
 	ExitCodeMemoryWait64
 	ExitCodeMemoryNotify
 	ExitCodeUnalignedAtomic
+	ExitCodeThrow
+	ExitCodeTryTableEnter
+	ExitCodeTryTableExit
 	exitCodeMax
 )
 
@@ -86,6 +89,12 @@ func (e ExitCode) String() string {
 		return "memory_wait64"
 	case ExitCodeMemoryNotify:
 		return "memory_notify"
+	case ExitCodeThrow:
+		return "throw"
+	case ExitCodeTryTableEnter:
+		return "try_table_enter"
+	case ExitCodeTryTableExit:
+		return "try_table_exit"
 	}
 	panic("TODO")
 }

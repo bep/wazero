@@ -49,7 +49,7 @@ func decodeConstantExpression(r *bytes.Reader, enabledFeatures api.CoreFeatures,
 		reftype, err := r.ReadByte()
 		if err != nil {
 			return fmt.Errorf("read reference type for ref.null: %w", err)
-		} else if reftype != wasm.RefTypeFuncref && reftype != wasm.RefTypeExternref {
+		} else if reftype != wasm.RefTypeFuncref && reftype != wasm.RefTypeExternref && reftype != wasm.RefTypeExnref {
 			return fmt.Errorf("invalid type for ref.null: 0x%x", reftype)
 		}
 	case wasm.OpcodeRefFunc:

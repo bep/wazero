@@ -28,6 +28,9 @@ type Compiler struct {
 	checkModuleExitCodeSig ssa.Signature
 	tableGrowSig           ssa.Signature
 	refFuncSig             ssa.Signature
+	throwSig               ssa.Signature
+	tryTableEnterSig       ssa.Signature
+	tryTableExitSig        ssa.Signature
 	memmoveSig             ssa.Signature
 	ensureTermination      bool
 
@@ -160,8 +163,29 @@ func (c *Compiler) declareSignatures(listenerOn bool) {
 	}
 	c.ssaBuilder.DeclareSignature(&c.refFuncSig)
 
-	c.memmoveSig = ssa.Signature{
+	c.throwSig = ssa.Signature{
 		ID: c.refFuncSig.ID + 1,
+		// exec context, tag index.
+		Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32},
+	}
+	c.ssaBuilder.DeclareSignature(&c.throwSig)
+
+	c.tryTableEnterSig = ssa.Signature{
+		ID: c.throwSig.ID + 1,
+		// exec context, try_table index.
+		Params: []ssa.Type{ssa.TypeI64, ssa.TypeI32},
+	}
+	c.ssaBuilder.DeclareSignature(&c.tryTableEnterSig)
+
+	c.tryTableExitSig = ssa.Signature{
+		ID: c.tryTableEnterSig.ID + 1,
+		// exec context.
+		Params: []ssa.Type{ssa.TypeI64},
+	}
+	c.ssaBuilder.DeclareSignature(&c.tryTableExitSig)
+
+	c.memmoveSig = ssa.Signature{
+		ID: c.tryTableExitSig.ID + 1,
 		// dst, src, and the byte count.
 		Params: []ssa.Type{ssa.TypeI64, ssa.TypeI64, ssa.TypeI64},
 	}
@@ -346,7 +370,8 @@ func (c *Compiler) declareWasmGlobal(typ wasm.ValueType, mutable bool) {
 		st = ssa.TypeI32
 	case wasm.ValueTypeI64,
 		// Both externref and funcref are represented as I64 since we only support 64-bit platforms.
-		wasm.ValueTypeExternref, wasm.ValueTypeFuncref:
+		// exnref is also a reference type.
+		wasm.ValueTypeExternref, wasm.ValueTypeFuncref, wasm.ValueTypeExnref:
 		st = ssa.TypeI64
 	case wasm.ValueTypeF32:
 		st = ssa.TypeF32
@@ -373,7 +398,8 @@ func WasmTypeToSSAType(vt wasm.ValueType) ssa.Type {
 		return ssa.TypeI32
 	case wasm.ValueTypeI64,
 		// Both externref and funcref are represented as I64 since we only support 64-bit platforms.
-		wasm.ValueTypeExternref, wasm.ValueTypeFuncref:
+		// exnref is also a reference type.
+		wasm.ValueTypeExternref, wasm.ValueTypeFuncref, wasm.ValueTypeExnref:
 		return ssa.TypeI64
 	case wasm.ValueTypeF32:
 		return ssa.TypeF32

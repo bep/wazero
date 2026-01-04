@@ -33,6 +33,8 @@ var (
 	ErrRuntimeExpectedSharedMemory = New("expected shared memory")
 	// ErrRuntimeTooManyWaiters indicates that atomic.wait was called with too many waiters.
 	ErrRuntimeTooManyWaiters = New("too many waiters")
+	// ErrRuntimeException indicates that an uncaught exception was thrown.
+	ErrRuntimeException = New("wasm exception")
 )
 
 // Error is returned by a wasm.Engine during the execution of Wasm functions, and they indicate that the Wasm runtime

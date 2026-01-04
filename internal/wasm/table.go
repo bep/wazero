@@ -24,6 +24,8 @@ const (
 	RefTypeFuncref = ValueTypeFuncref
 	// RefTypeExternref represents a reference to a host object, which is not currently supported in wazero.
 	RefTypeExternref = ValueTypeExternref
+	// RefTypeExnref represents a reference to an exception (for exception handling).
+	RefTypeExnref = ValueTypeExnref
 )
 
 func RefTypeName(t RefType) (ret string) {
@@ -32,6 +34,8 @@ func RefTypeName(t RefType) (ret string) {
 		ret = "funcref"
 	case RefTypeExternref:
 		ret = "externref"
+	case RefTypeExnref:
+		ret = "exnref"
 	default:
 		ret = fmt.Sprintf("unknown(0x%x)", t)
 	}

@@ -43,6 +43,10 @@ type (
 		execCtxPtr        uintptr
 		numberOfResults   int
 		stackIteratorImpl stackIterator
+		// tryTableContexts is a stack of active try_table contexts for exception handling.
+		tryTableContexts []*tryTableContext
+		// pendingException holds a caught exception that needs to be dispatched.
+		pendingException *wasmException
 	}
 
 	// executionContext is the struct to be read/written by assembly functions.
@@ -90,6 +94,19 @@ type (
 		memoryWait64TrampolineAddress *byte
 		// memoryNotifyTrampolineAddress holds the address of the memory_notify trampoline function.
 		memoryNotifyTrampolineAddress *byte
+		// throwTrampolineAddress holds the address of throw trampoline function.
+		throwTrampolineAddress *byte
+		// tryTableEnterTrampolineAddress holds the address of try_table enter trampoline function.
+		tryTableEnterTrampolineAddress *byte
+		// tryTableExitTrampolineAddress holds the address of try_table exit trampoline function.
+		tryTableExitTrampolineAddress *byte
+		// pendingExceptionTagIndex holds the tag index of a pending exception.
+		// 0xFFFFFFFF means no pending exception.
+		pendingExceptionTagIndex uint32
+		_                        uint32 // padding for alignment
+		// exceptionValues holds the exception values for catch handlers.
+		// This is an array of 16 uint64 values (128 bytes).
+		exceptionValues [16]uint64
 	}
 )
 
@@ -117,6 +134,8 @@ func (c *callEngine) init() {
 		c.execCtx.stackBottomPtr = &c.stack[0]
 	}
 	c.execCtxPtr = uintptr(unsafe.Pointer(&c.execCtx))
+	// Initialize pendingExceptionTagIndex to 0xFFFFFFFF (no pending exception).
+	c.execCtx.pendingExceptionTagIndex = 0xFFFFFFFF
 }
 
 // alignedStackTop returns 16-bytes aligned stack top of given stack.
@@ -487,6 +506,70 @@ func (c *callEngine) callWithStack(ctx context.Context, paramResultStack []uint6
 			c.execCtx.exitCode = wazevoapi.ExitCodeOK
 			afterGoFunctionCallEntrypoint(c.execCtx.goCallReturnAddress, c.execCtxPtr,
 				uintptr(unsafe.Pointer(c.execCtx.stackPointerBeforeGoCall)), c.execCtx.framePointerBeforeGoCall)
+		case wazevoapi.ExitCodeTryTableEnter:
+			// Save execution state for exception handling.
+			s := goCallStackView(c.execCtx.stackPointerBeforeGoCall)
+			_ = s[0] // try_table index (currently unused, for future use)
+
+			// Create a snapshot of the current state.
+			returnAddress := c.execCtx.goCallReturnAddress
+			oldTop, oldSp := c.stackTop, uintptr(unsafe.Pointer(c.execCtx.stackPointerBeforeGoCall))
+			newSP, newFP, newTop, newStack := c.cloneStack(uintptr(len(c.stack)) + 16)
+			adjustClonedStack(oldSp, oldTop, newSP, newFP, newTop)
+
+			ctx := &tryTableContext{
+				sp:             newSP,
+				fp:             newFP,
+				top:            newTop,
+				savedRegisters: c.execCtx.savedRegisters,
+				returnAddress:  returnAddress,
+				stack:          newStack,
+				c:              c,
+			}
+			c.tryTableContexts = append(c.tryTableContexts, ctx)
+
+			c.execCtx.exitCode = wazevoapi.ExitCodeOK
+			afterGoFunctionCallEntrypoint(c.execCtx.goCallReturnAddress, c.execCtxPtr,
+				uintptr(unsafe.Pointer(c.execCtx.stackPointerBeforeGoCall)), c.execCtx.framePointerBeforeGoCall)
+		case wazevoapi.ExitCodeTryTableExit:
+			// Pop the try_table context.
+			if len(c.tryTableContexts) > 0 {
+				c.tryTableContexts = c.tryTableContexts[:len(c.tryTableContexts)-1]
+			}
+			c.execCtx.exitCode = wazevoapi.ExitCodeOK
+			afterGoFunctionCallEntrypoint(c.execCtx.goCallReturnAddress, c.execCtxPtr,
+				uintptr(unsafe.Pointer(c.execCtx.stackPointerBeforeGoCall)), c.execCtx.framePointerBeforeGoCall)
+		case wazevoapi.ExitCodeThrow:
+			s := goCallStackView(c.execCtx.stackPointerBeforeGoCall)
+			tagIndex := uint32(s[0])
+
+			// Check if there are active try_table contexts.
+			if len(c.tryTableContexts) == 0 {
+				// No active try_table, propagate to host.
+				panic(wasmruntime.ErrRuntimeException)
+			}
+
+			// Pop the try_table context and set up exception dispatch.
+			ctx := c.tryTableContexts[len(c.tryTableContexts)-1]
+			c.tryTableContexts = c.tryTableContexts[:len(c.tryTableContexts)-1]
+
+			// Set the pending exception tag index so native code can dispatch.
+			c.execCtx.pendingExceptionTagIndex = tagIndex
+
+			// Store the exception for later use (e.g., extracting values).
+			c.pendingException = &wasmException{
+				tagIndex: tagIndex,
+				// TODO: capture exception values based on tag signature.
+			}
+
+			// Restore state to the try_table entry point.
+			ctx.doRestore()
+
+			// Resume execution at the try_table entry return point.
+			// The native code there will check pendingExceptionTagIndex and dispatch.
+			c.execCtx.exitCode = wazevoapi.ExitCodeOK
+			afterGoFunctionCallEntrypoint(c.execCtx.goCallReturnAddress, c.execCtxPtr,
+				uintptr(unsafe.Pointer(c.execCtx.stackPointerBeforeGoCall)), c.execCtx.framePointerBeforeGoCall)
 		case wazevoapi.ExitCodeUnreachable:
 			panic(wasmruntime.ErrRuntimeUnreachable)
 		case wazevoapi.ExitCodeMemoryOutOfBounds:
@@ -652,6 +735,34 @@ type snapshot struct {
 	c              *callEngine
 }
 
+// wasmException represents a thrown WebAssembly exception.
+type wasmException struct {
+	tagIndex uint32
+	values   []uint64
+}
+
+// tryTableContext stores the state at try_table entry for exception handling.
+type tryTableContext struct {
+	// Saved execution state (similar to snapshot).
+	sp, fp, top    uintptr
+	returnAddress  *byte
+	stack          []byte
+	savedRegisters [64][2]uint64
+	// catchClauses from the try_table.
+	catchClauses []tryTableCatchClause
+	// handlerAddresses are the machine code addresses of catch handler blocks.
+	handlerAddresses []*byte
+	// callEngine that owns this context.
+	c *callEngine
+}
+
+// tryTableCatchClause mirrors the frontend catchClause for runtime use.
+type tryTableCatchClause struct {
+	catchType  byte
+	tagIndex   uint32
+	labelIndex uint32
+}
+
 // Snapshot implements the same method as documented on experimental.Snapshotter.
 func (c *callEngine) Snapshot() experimental.Snapshot {
 	returnAddress := c.execCtx.goCallReturnAddress
@@ -705,4 +816,21 @@ func snapshotRecoverFn(c *callEngine) {
 			panic(r)
 		}
 	}
+}
+
+// doRestore restores execution state from a try_table context.
+// This modifies the callEngine state to point to the snapshotted state.
+// The caller is responsible for calling afterGoFunctionCallEntrypoint after this returns.
+func (t *tryTableContext) doRestore() {
+	spp := *(**uint64)(unsafe.Pointer(&t.sp))
+
+	c := t.c
+	c.stack = t.stack
+	c.stackTop = t.top
+	ec := &c.execCtx
+	ec.stackBottomPtr = &c.stack[0]
+	ec.stackPointerBeforeGoCall = spp
+	ec.framePointerBeforeGoCall = t.fp
+	ec.goCallReturnAddress = t.returnAddress
+	ec.savedRegisters = t.savedRegisters
 }

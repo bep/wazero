@@ -79,6 +79,7 @@ type (
 		Globals        []*GlobalInstance
 		MemoryInstance *MemoryInstance
 		Tables         []*TableInstance
+		Tags           []*TagInstance
 
 		// Engine implements function calls for this module.
 		Engine ModuleEngine
@@ -149,6 +150,14 @@ type (
 		// If me is non-nil, the value is stored in the module engine.
 		Me    ModuleEngine
 		Index Index
+	}
+
+	// TagInstance represents a tag instance in a store (for exception handling).
+	TagInstance struct {
+		// Type is the function type that defines the tag's signature.
+		Type *FunctionType
+		// ModuleInstance is the module that owns this tag.
+		ModuleInstance *ModuleInstance
 	}
 
 	// FunctionTypeID is a uniquely assigned integer for a function type.
@@ -348,6 +357,7 @@ func (s *Store) instantiate(
 
 	m.Tables = make([]*TableInstance, int(module.ImportTableCount)+len(module.TableSection))
 	m.Globals = make([]*GlobalInstance, int(module.ImportGlobalCount)+len(module.GlobalSection))
+	m.Tags = make([]*TagInstance, int(module.ImportTagCount)+len(module.TagSection))
 	m.Engine, err = s.Engine.NewModuleEngine(module, m)
 	if err != nil {
 		return nil, err
@@ -367,6 +377,7 @@ func (s *Store) instantiate(
 	allocator, _ := ctx.Value(expctxkeys.MemoryAllocatorKey{}).(experimental.MemoryAllocator)
 
 	m.buildGlobals(module, m.Engine.FunctionInstanceReference)
+	m.buildTags(module)
 	m.buildMemory(module, allocator)
 	m.Exports = module.Exports
 	for _, exp := range m.Exports {
@@ -509,6 +520,15 @@ func (m *ModuleInstance) resolveImports(ctx context.Context, module *Module) (er
 					return
 				}
 				m.Globals[i.IndexPerType] = importedGlobal
+			case ExternTypeTag:
+				expectedType := &module.TypeSection[i.DescTag]
+				importedTag := importedModule.Tags[imported.Index]
+
+				if !importedTag.Type.EqualsSignature(expectedType.Params, expectedType.Results) {
+					err = errorInvalidImport(i, fmt.Errorf("tag type mismatch: %s != %s", expectedType, importedTag.Type))
+					return
+				}
+				m.Tags[i.IndexPerType] = importedTag
 			}
 		}
 	}

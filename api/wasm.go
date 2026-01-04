@@ -19,6 +19,7 @@ const (
 	ExternTypeTable  ExternType = 0x01
 	ExternTypeMemory ExternType = 0x02
 	ExternTypeGlobal ExternType = 0x03
+	ExternTypeTag    ExternType = 0x04
 )
 
 // The below are exported to consolidate parsing behavior for external types.
@@ -31,6 +32,8 @@ const (
 	ExternTypeMemoryName = "memory"
 	// ExternTypeGlobalName is the name of the WebAssembly 1.0 (20191205) Text Format field for ExternTypeGlobal.
 	ExternTypeGlobalName = "global"
+	// ExternTypeTagName is the name of the Text Format field for ExternTypeTag (exception handling proposal).
+	ExternTypeTagName = "tag"
 )
 
 // ExternTypeName returns the name of the WebAssembly 1.0 (20191205) Text Format field of the given type.
@@ -46,6 +49,8 @@ func ExternTypeName(et ExternType) string {
 		return ExternTypeMemoryName
 	case ExternTypeGlobal:
 		return ExternTypeGlobalName
+	case ExternTypeTag:
+		return ExternTypeTagName
 	}
 	return fmt.Sprintf("%#x", et)
 }

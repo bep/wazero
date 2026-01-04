@@ -45,12 +45,13 @@ type Module struct {
 	//
 	// See https://www.w3.org/TR/2019/REC-wasm-core-1-20191205/#import-section%E2%91%A0
 	ImportSection []Import
-	// ImportFunctionCount ImportGlobalCount ImportMemoryCount, and ImportTableCount are
+	// ImportFunctionCount ImportGlobalCount ImportMemoryCount, ImportTableCount, and ImportTagCount are
 	// the cached import count per ExternType set during decoding.
 	ImportFunctionCount,
 	ImportGlobalCount,
 	ImportMemoryCount,
-	ImportTableCount Index
+	ImportTableCount,
+	ImportTagCount Index
 	// ImportPerModule maps a module name to the list of Import to be imported from the module.
 	// This is used to do fast import resolution during instantiation.
 	ImportPerModule map[string][]*Import
@@ -165,6 +166,12 @@ type Module struct {
 	// See https://www.w3.org/TR/2022/WD-wasm-core-2-20220419/appendix/changes.html#bulk-memory-and-table-instructions
 	DataCountSection *uint32
 
+	// TagSection corresponds to the "tag" section in a WebAssembly module.
+	//
+	// Note: This is a part of the exception handling feature.
+	// See https://webassembly.github.io/exception-handling/core/binary/modules.html#tag-section
+	TagSection TagSection
+
 	// ID is the sha256 value of the source wasm plus the configurations which affect the runtime representation of
 	// Wasm binary. This is only used for caching.
 	ID ModuleID
@@ -196,6 +203,7 @@ const (
 	MaximumGlobals       = uint32(1 << 27)
 	MaximumFunctionIndex = uint32(1 << 27)
 	MaximumTableIndex    = uint32(1 << 27)
+	MaximumTags          = uint32(1 << 27)
 )
 
 // AssignModuleID calculates a sha256 checksum on `wasm` and other args, and set Module.ID to the result.
@@ -300,6 +308,23 @@ func (m *Module) Validate(enabledFeatures api.CoreFeatures) error {
 
 	if err = m.validateDataCountSection(); err != nil {
 		return err
+	}
+
+	if err = m.validateTags(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *Module) validateTags() error {
+	for i, tag := range m.TagSection {
+		if tag.TypeIndex >= uint32(len(m.TypeSection)) {
+			return fmt.Errorf("tag[%d]: type index %d out of range", i, tag.TypeIndex)
+		}
+		ft := &m.TypeSection[tag.TypeIndex]
+		if len(ft.Results) > 0 {
+			return fmt.Errorf("non-empty tag result type")
+		}
 	}
 	return nil
 }
@@ -573,7 +598,7 @@ func validateConstExpression(globals []GlobalType, numFuncs uint32, expr *Consta
 			return fmt.Errorf("read reference type for ref.null: %w", io.ErrShortBuffer)
 		}
 		reftype := expr.Data[0]
-		if reftype != RefTypeFuncref && reftype != RefTypeExternref {
+		if reftype != RefTypeFuncref && reftype != RefTypeExternref && reftype != RefTypeExnref {
 			return fmt.Errorf("invalid type for ref.null: 0x%x", reftype)
 		}
 		actualType = reftype
@@ -624,6 +649,16 @@ func (m *ModuleInstance) buildGlobals(module *Module, funcRefResolver func(funcI
 		m.Globals[i+module.ImportGlobalCount] = g
 		g.Type = gs.Type
 		g.initialize(importedGlobals, &gs.Init, funcRefResolver)
+	}
+}
+
+func (m *ModuleInstance) buildTags(module *Module) {
+	for i := Index(0); i < Index(len(module.TagSection)); i++ {
+		tag := module.TagSection[i]
+		m.Tags[i+module.ImportTagCount] = &TagInstance{
+			Type:           &module.TypeSection[tag.TypeIndex],
+			ModuleInstance: m,
+		}
 	}
 }
 
@@ -757,6 +792,8 @@ type Import struct {
 	DescMem *Memory
 	// DescGlobal is the inlined GlobalType when Type equals ExternTypeGlobal
 	DescGlobal GlobalType
+	// DescTag is the index in Module.TypeSection when Type equals ExternTypeTag
+	DescTag Index
 	// IndexPerType has the index of this import per ExternType.
 	IndexPerType Index
 }
@@ -844,6 +881,21 @@ type Code struct {
 	// This is used for DWARF based stack trace where a program counter represents an offset in code section.
 	BodyOffsetInCodeSection uint64
 }
+
+// Tag corresponds to the "tag" section in a WebAssembly module.
+//
+// See https://webassembly.github.io/exception-handling/core/binary/modules.html#tag-section
+type Tag struct {
+	// Type is the kind of tag, currently only Exception.
+	Attribute byte // TODO1 type TagAttribute?
+	// TypeIndex is the index into the TypeSection of the signature of this tag.
+	TypeIndex Index
+}
+
+// TagSection is a slice of Tag defined in a module.
+//
+// See https://webassembly.github.io/exception-handling/core/binary/modules.html#tag-section
+type TagSection []*Tag
 
 type DataSegment struct {
 	OffsetExpression ConstantExpression
@@ -993,6 +1045,10 @@ const (
 	// See https://www.w3.org/TR/2022/WD-wasm-core-2-20220419/binary/modules.html#data-count-section
 	// See https://www.w3.org/TR/2022/WD-wasm-core-2-20220419/appendix/changes.html#bulk-memory-and-table-instructions
 	SectionIDDataCount
+
+	// SectionIDTag may exist in WebAssembly 2.0 with exception handling proposal.
+	// https://webassembly.github.io/spec/core/binary/modules.html#tag-section
+	SectionIDTag
 )
 
 // SectionIDName returns the canonical name of a module section.
@@ -1025,6 +1081,8 @@ func SectionIDName(sectionID SectionID) string {
 		return "data"
 	case SectionIDDataCount:
 		return "data_count"
+	case SectionIDTag:
+		return "tag"
 	}
 	return "unknown"
 }
@@ -1042,6 +1100,7 @@ const (
 	// TODO: ValueTypeFuncref is not exposed in the api pkg yet.
 	ValueTypeFuncref   ValueType = 0x70
 	ValueTypeExternref           = api.ValueTypeExternref
+	ValueTypeExnref    ValueType = 0x69
 )
 
 // ValueTypeName is an alias of api.ValueTypeName defined to simplify imports.
@@ -1050,12 +1109,14 @@ func ValueTypeName(t ValueType) string {
 		return "funcref"
 	} else if t == ValueTypeV128 {
 		return "v128"
+	} else if t == ValueTypeExnref {
+		return "exnref"
 	}
 	return api.ValueTypeName(t)
 }
 
 func isReferenceValueType(vt ValueType) bool {
-	return vt == ValueTypeExternref || vt == ValueTypeFuncref
+	return vt == ValueTypeExternref || vt == ValueTypeFuncref || vt == ValueTypeExnref
 }
 
 // ExternType is an alias of api.ExternType defined to simplify imports.
@@ -1070,6 +1131,8 @@ const (
 	ExternTypeMemoryName = api.ExternTypeMemoryName
 	ExternTypeGlobal     = api.ExternTypeGlobal
 	ExternTypeGlobalName = api.ExternTypeGlobalName
+	ExternTypeTag        = api.ExternTypeTag
+	ExternTypeTagName    = api.ExternTypeTagName
 )
 
 // ExternTypeName is an alias of api.ExternTypeName defined to simplify imports.

@@ -79,6 +79,9 @@ const (
 )
 
 func (c commandActionVal) String() string {
+	if c.Value == nil {
+		return "{type: " + c.ValType + ", value: nil}"
+	}
 	var v string
 	valTypeStr := c.ValType
 	switch c.ValType {
@@ -260,6 +263,9 @@ func getNaNBits(strValue string, is32bit bool) (ret uint64) {
 }
 
 func (c commandActionVal) toUint64() (ret uint64) {
+	if c.Value == nil {
+		return // TODO1 assert_exception has only type no value for expect..
+	}
 	strValue := c.Value.(string)
 	if strings.Contains(strValue, "nan") {
 		ret = getNaNBits(strValue, c.ValType == "f32")
@@ -347,6 +353,11 @@ func Run(t *testing.T, testDataFS embed.FS, ctx context.Context, config wazero.R
 	}
 }
 
+func debugf(format string, a ...any) {
+	// TODO1.
+	fmt.Printf(format+"\n", a...)
+}
+
 // RunCase runs the test case described by the given spectest file name (without .wast!) in the testDataFS file system.
 // lineBegin and lineEnd are the line numbers to run. If lineBegin == 0 and lineEnd == math.MaxInt, all the lines are run.
 //
@@ -384,6 +395,7 @@ func RunCase(t *testing.T, testDataFS embed.FS, f string, ctx context.Context, c
 			} else if line < lineBegin || line > lineEnd {
 				continue
 			}
+
 			t.Run(fmt.Sprintf("%s/line:%d", c.CommandType, c.Line), func(t *testing.T) {
 				msg := fmt.Sprintf("%s:%d %s", wastName, c.Line, c.CommandType)
 				switch c.CommandType {
@@ -402,7 +414,7 @@ func RunCase(t *testing.T, testDataFS embed.FS, f string, ctx context.Context, c
 						modules[c.Name] = mod
 					}
 					lastInstantiatedModule = mod
-				case "assert_return", "action":
+				case "assert_return", "assert_exception", "action":
 					m := lastInstantiatedModule
 					if c.Action.Module != "" {
 						m = modules[c.Action.Module]
@@ -416,16 +428,21 @@ func RunCase(t *testing.T, testDataFS embed.FS, f string, ctx context.Context, c
 						}
 						fn := m.ExportedFunction(c.Action.Field)
 						results, err := fn.Call(ctx, args...)
-						require.NoError(t, err, msg)
-						require.Equal(t, len(exps), len(results), msg)
-						laneTypes := map[int]string{}
-						for i, expV := range c.Exps {
-							if expV.ValType == "v128" {
-								laneTypes[i] = expV.LaneType
+						if c.CommandType == "assert_exception" {
+							require.Error(t, err, msg)
+						} else {
+							require.NoError(t, err, msg)
+							require.Equal(t, len(exps), len(results), msg)
+							laneTypes := map[int]string{}
+							for i, expV := range c.Exps {
+								if expV.ValType == "v128" {
+									laneTypes[i] = expV.LaneType
+								}
 							}
+							matched, valuesMsg := valuesEq(results, exps, fn.Definition().ResultTypes(), laneTypes)
+							require.True(t, matched, msg+"\n"+valuesMsg)
 						}
-						matched, valuesMsg := valuesEq(results, exps, fn.Definition().ResultTypes(), laneTypes)
-						require.True(t, matched, msg+"\n"+valuesMsg)
+
 					case "get":
 						_, exps := c.getAssertReturnArgsExps()
 						require.Equal(t, 1, len(exps))
@@ -551,7 +568,7 @@ func valuesEq(actual, exps []uint64, valTypes []wasm.ValueType, laneTypes map[in
 			msgActualValuesStrs = append(msgActualValuesStrs, fmt.Sprintf("%d", uint32(actual[uint64RepPos])))
 			matched = matched && uint32(exps[uint64RepPos]) == uint32(actual[uint64RepPos])
 			uint64RepPos++
-		case wasm.ValueTypeI64, wasm.ValueTypeExternref, wasm.ValueTypeFuncref:
+		case wasm.ValueTypeI64, wasm.ValueTypeExternref, wasm.ValueTypeFuncref, wasm.ValueTypeExnref:
 			msgExpValuesStrs = append(msgExpValuesStrs, fmt.Sprintf("%d", exps[uint64RepPos]))
 			msgActualValuesStrs = append(msgActualValuesStrs, fmt.Sprintf("%d", actual[uint64RepPos]))
 			matched = matched && exps[uint64RepPos] == actual[uint64RepPos]

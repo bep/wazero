@@ -149,10 +149,31 @@ type callEngine struct {
 
 	// stackiterator for Listeners to walk frames and stack.
 	stackIterator stackIterator
+
+	// Exception handling state.
+	// pendingExceptionTagIndex is 0xFFFFFFFF if no pending exception.
+	pendingExceptionTagIndex uint32
+	// pendingExceptionValues holds the values from the thrown exception.
+	pendingExceptionValues []uint64
+
+	// tryTableHandlers is a stack of active try_table catch handlers.
+	// Each entry contains the encoded catch clauses from operationKindTryTableEnter.
+	tryTableHandlers []tryTableHandler
+}
+
+// tryTableHandler represents an active try_table block's catch handlers.
+type tryTableHandler struct {
+	// frameIndex is the index into callEngine.frames for this handler's function.
+	frameIndex int
+	// catches contains the encoded catch clause data (5 uint64s per clause).
+	catches []uint64
+	// runtimeStackSize is the stack size when the try_table was entered.
+	// Used to restore stack when catching an exception.
+	runtimeStackSize int
 }
 
 func (e *moduleEngine) newCallEngine(compiled *function) *callEngine {
-	return &callEngine{f: compiled}
+	return &callEngine{f: compiled, pendingExceptionTagIndex: 0xFFFFFFFF}
 }
 
 func (ce *callEngine) pushValue(v uint64) {
@@ -493,6 +514,12 @@ func (e *engine) lowerIR(ir *compilationResult, ret *compiledFunction) error {
 			}
 		case operationKindTailCallReturnCallIndirect:
 			e.setLabelAddress(&op.Us[1], label(op.Us[1]), labelAddressResolutions)
+		case operationKindTryTableEnter:
+			// Resolve labels in catch clauses. Each clause is 5 values: catchType, tagIndex, targetPC (label), stackDepth, pushExnref.
+			for j := 0; j < len(op.Us); j += 5 {
+				target := op.Us[j+2]
+				e.setLabelAddress(&op.Us[j+2], label(target), labelAddressResolutions)
+			}
 		}
 	}
 	return nil
@@ -820,8 +847,7 @@ func (ce *callEngine) callNativeFunc(ctx context.Context, m *wasm.ModuleInstance
 				hi, lo := ce.popValue(), ce.popValue()
 				ce.stack[lowIndex], ce.stack[highIndex] = lo, hi
 			} else {
-				index := len(ce.stack) - 1 - int(op.U1)
-				ce.stack[index] = ce.popValue()
+				ce.stack[len(ce.stack)-1-int(op.U1)] = ce.popValue()
 			}
 			frame.pc++
 		case operationKindGlobalGet:
@@ -4371,6 +4397,142 @@ func (ce *callEngine) callNativeFunc(ctx context.Context, m *wasm.ModuleInstance
 
 			ce.dropForTailCall(frame, tf)
 			body, bodyLen = ce.resetPc(frame, tf)
+		case operationKindThrow:
+			tagIndex := uint32(op.U1)
+			// Get exception values from stack based on tag type.
+			tag := moduleInst.Source.TagSection[tagIndex]
+			tagType := &moduleInst.Source.TypeSection[tag.TypeIndex]
+			exceptionValues := make([]uint64, tagType.ParamNumInUint64)
+			ce.popValues(exceptionValues)
+
+			// Search for a matching catch handler.
+			handled := false
+			for i := len(ce.tryTableHandlers) - 1; i >= 0; i-- {
+				handler := &ce.tryTableHandlers[i]
+				// Each catch clause: catchType, tagIndex, targetPC, stackDepth (unused), pushExnref
+				for j := 0; j < len(handler.catches); j += 5 {
+					catchType := byte(handler.catches[j])
+					catchTagIndex := uint32(handler.catches[j+1])
+					targetPC := handler.catches[j+2]
+					// Note: handler.catches[j+3] is compile-time stackDepth, we use runtimeStackSize instead
+					pushExnref := handler.catches[j+4] == 1
+
+					var matches bool
+					switch catchType {
+					case wasm.OpcodeCatch:
+						matches = catchTagIndex == tagIndex
+					case wasm.OpcodeCatchRef:
+						matches = catchTagIndex == tagIndex
+					case wasm.OpcodeCatchAll, wasm.OpcodeCatchAllRef:
+						matches = true
+					}
+
+					if matches {
+						// Pop all handlers up to and including this one.
+						ce.tryTableHandlers = ce.tryTableHandlers[:i]
+
+						// Restore stack to the size when try_table was entered.
+						ce.stack = ce.stack[:handler.runtimeStackSize]
+
+						// Push exception values for catch/catch_ref.
+						if catchType == wasm.OpcodeCatch || catchType == wasm.OpcodeCatchRef {
+							ce.pushValues(exceptionValues)
+						}
+
+						// Push exnref if needed (catch_ref, catch_all_ref).
+						if pushExnref {
+							// Encode exnref as tag index (for later throw_ref).
+							ce.pushValue(uint64(tagIndex))
+						}
+
+						// Jump to catch target.
+						frame.pc = targetPC
+						handled = true
+						break
+					}
+				}
+				if handled {
+					break
+				}
+			}
+
+			if !handled {
+				// No catch handler found, propagate exception.
+				panic(wasmruntime.ErrRuntimeException)
+			}
+			continue
+
+		case operationKindThrowRef:
+			// Pop the exnref (contains tag index).
+			exnref := ce.popValue()
+			tagIndex := uint32(exnref)
+
+			// For throw_ref, we need to get the exception values.
+			// In our simple implementation, exnref only contains tag index.
+			// The exception values should have been stored, but we don't have them here.
+			// In a full implementation, we'd need to store exception values with exnref.
+			// For now, we search for a matching catch_all_ref or catch_ref handler.
+			handled := false
+			for i := len(ce.tryTableHandlers) - 1; i >= 0; i-- {
+				handler := &ce.tryTableHandlers[i]
+				for j := 0; j < len(handler.catches); j += 5 {
+					catchType := byte(handler.catches[j])
+					catchTagIndex := uint32(handler.catches[j+1])
+					targetPC := handler.catches[j+2]
+					// Note: handler.catches[j+3] is compile-time stackDepth, we use runtimeStackSize instead
+					pushExnref := handler.catches[j+4] == 1
+
+					var matches bool
+					switch catchType {
+					case wasm.OpcodeCatch:
+						matches = catchTagIndex == tagIndex
+					case wasm.OpcodeCatchRef:
+						matches = catchTagIndex == tagIndex
+					case wasm.OpcodeCatchAll, wasm.OpcodeCatchAllRef:
+						matches = true
+					}
+
+					if matches {
+						ce.tryTableHandlers = ce.tryTableHandlers[:i]
+						ce.stack = ce.stack[:handler.runtimeStackSize]
+
+						// For throw_ref, we don't push exception values (we don't have them).
+						// Just push exnref if needed.
+						if pushExnref {
+							ce.pushValue(exnref)
+						}
+
+						frame.pc = targetPC
+						handled = true
+						break
+					}
+				}
+				if handled {
+					break
+				}
+			}
+
+			if !handled {
+				panic(wasmruntime.ErrRuntimeException)
+			}
+			continue
+
+		case operationKindTryTableEnter:
+			// Push catch handlers onto the stack.
+			// Store the current stack size for proper restoration when catching.
+			ce.tryTableHandlers = append(ce.tryTableHandlers, tryTableHandler{
+				frameIndex:       len(ce.frames) - 1,
+				catches:          op.Us,
+				runtimeStackSize: len(ce.stack),
+			})
+			frame.pc++
+
+		case operationKindTryTableExit:
+			// Pop catch handlers from the stack.
+			if len(ce.tryTableHandlers) > 0 {
+				ce.tryTableHandlers = ce.tryTableHandlers[:len(ce.tryTableHandlers)-1]
+			}
+			frame.pc++
 
 		default:
 			frame.pc++

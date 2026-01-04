@@ -25,7 +25,8 @@ func decodeValueTypes(r *bytes.Reader, num uint32) ([]wasm.ValueType, error) {
 	for _, v := range ret {
 		switch v {
 		case wasm.ValueTypeI32, wasm.ValueTypeF32, wasm.ValueTypeI64, wasm.ValueTypeF64,
-			wasm.ValueTypeExternref, wasm.ValueTypeFuncref, wasm.ValueTypeV128:
+			wasm.ValueTypeExternref, wasm.ValueTypeFuncref, wasm.ValueTypeV128,
+			wasm.ValueTypeExnref:
 		default:
 			return nil, fmt.Errorf("invalid value type: %d", v)
 		}

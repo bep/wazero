@@ -41,8 +41,6 @@ func DecodeModule(
 	var lastSectionID wasm.SectionID
 	var info, line, str, abbrev, ranges []byte // For DWARF Data.
 	for {
-		// TODO: except custom sections, all others are required to be in order, but we aren't checking yet.
-		// See https://www.w3.org/TR/2019/REC-wasm-core-1-20191205/#modules%E2%91%A0%E2%93%AA
 		sectionID, err := r.ReadByte()
 		if err == io.EOF {
 			break
@@ -113,7 +111,7 @@ func DecodeModule(
 		case wasm.SectionIDType:
 			m.TypeSection, err = decodeTypeSection(enabledFeatures, r)
 		case wasm.SectionIDImport:
-			m.ImportSection, m.ImportPerModule, m.ImportFunctionCount, m.ImportGlobalCount, m.ImportMemoryCount, m.ImportTableCount, err = decodeImportSection(r, memSizer, memoryLimitPages, enabledFeatures)
+			m.ImportSection, m.ImportPerModule, m.ImportFunctionCount, m.ImportGlobalCount, m.ImportMemoryCount, m.ImportTableCount, m.ImportTagCount, err = decodeImportSection(r, memSizer, memoryLimitPages, enabledFeatures)
 			if err != nil {
 				return nil, err // avoid re-wrapping the error.
 			}
@@ -142,6 +140,11 @@ func DecodeModule(
 				return nil, fmt.Errorf("data count section not supported as %v", err)
 			}
 			m.DataCountSection, err = decodeDataCountSection(r)
+		case wasm.SectionIDTag:
+			if err := enabledFeatures.RequireEnabled(api.CoreFeatureExceptionHandling); err != nil {
+				return nil, fmt.Errorf("tag section not supported as %v", err)
+			}
+			m.TagSection, err = decodeTagSection(r, enabledFeatures)
 		default:
 			err = ErrInvalidSectionID
 		}
@@ -168,6 +171,42 @@ func DecodeModule(
 	return m, nil
 }
 
+func decodeTagSection(r *bytes.Reader, enabledFeatures api.CoreFeatures) (tags wasm.TagSection, err error) {
+	if !enabledFeatures.IsEnabled(api.CoreFeatureExceptionHandling) {
+		err = errors.New("tag section decoding is not enabled")
+		return
+	}
+
+	tagCount, _, err := leb128.DecodeUint32(r)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read tag count: %w", err)
+	}
+
+	if tagCount > wasm.MaximumTags {
+		return nil, fmt.Errorf("tag count %d exceeds maximum %d", tagCount, wasm.MaximumTags)
+	}
+
+	tags = make(wasm.TagSection, tagCount)
+	for i := range tagCount {
+		// Attribute is currently always 0.
+		attribute, err := r.ReadByte()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read attribute for tag %d: %w", i, err)
+		}
+		if attribute != 0 {
+			return nil, fmt.Errorf("invalid attribute for tag %d: must be 0 but was %d", i, attribute)
+		}
+
+		typeIndex, _, err := leb128.DecodeUint32(r)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read type index for tag %d: %w", i, err)
+		}
+
+		tags[i] = &wasm.Tag{Attribute: attribute, TypeIndex: typeIndex}
+	}
+	return
+}
+
 func checkSectionOrder(current, previous wasm.SectionID) (byte, bool) {
 	// https://webassembly.github.io/spec/core/binary/modules.html#binary-module
 
@@ -176,10 +215,10 @@ func checkSectionOrder(current, previous wasm.SectionID) (byte, bool) {
 		return previous, true
 	}
 
-	// DataCount was introduced in Wasm 2.0,
+	// Tag  was introduced in Wasm 3.0,
 	// and it's the maximum we support so far.
 	// It must come after Element and before Code.
-	if current > wasm.SectionIDDataCount {
+	if current > wasm.SectionIDTag {
 		return current, false
 	}
 	if current == wasm.SectionIDDataCount {
@@ -189,8 +228,10 @@ func checkSectionOrder(current, previous wasm.SectionID) (byte, bool) {
 		return current, current >= wasm.SectionIDCode
 	}
 
-	// Tag will be introduced in Wasm 3.0.
-	// It must come after Memory and before Global.
+	if current == wasm.SectionIDTag || previous == wasm.SectionIDTag {
+		// It must come after Memory and before Global.
+		return current, true // TODO1
+	}
 
 	// Otherwise, strictly increasing order.
 	return current, current > previous

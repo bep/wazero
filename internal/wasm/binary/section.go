@@ -22,6 +22,7 @@ func decodeTypeSection(enabledFeatures api.CoreFeatures, r *bytes.Reader) ([]was
 			return nil, fmt.Errorf("read %d-th type: %v", i, err)
 		}
 	}
+
 	return result, nil
 }
 
@@ -33,7 +34,7 @@ func decodeImportSection(
 	enabledFeatures api.CoreFeatures,
 ) (result []wasm.Import,
 	perModule map[string][]*wasm.Import,
-	funcCount, globalCount, memoryCount, tableCount wasm.Index, err error,
+	funcCount, globalCount, memoryCount, tableCount, tagCount wasm.Index, err error,
 ) {
 	vs, _, err := leb128.DecodeUint32(r)
 	if err != nil {
@@ -61,6 +62,9 @@ func decodeImportSection(
 		case wasm.ExternTypeTable:
 			imp.IndexPerType = tableCount
 			tableCount++
+		case wasm.ExternTypeTag:
+			imp.IndexPerType = tagCount
+			tagCount++
 		}
 		perModule[imp.Module] = append(perModule[imp.Module], imp)
 	}

@@ -52,7 +52,16 @@ const (
 	ExecutionContextOffsetFramePointerBeforeGoCall      Offset = 1152
 	ExecutionContextOffsetMemoryWait32TrampolineAddress Offset = 1160
 	ExecutionContextOffsetMemoryWait64TrampolineAddress Offset = 1168
-	ExecutionContextOffsetMemoryNotifyTrampolineAddress Offset = 1176
+	ExecutionContextOffsetMemoryNotifyTrampolineAddress   Offset = 1176
+	ExecutionContextOffsetThrowTrampolineAddress          Offset = 1184
+	ExecutionContextOffsetTryTableEnterTrampolineAddress  Offset = 1192
+	ExecutionContextOffsetTryTableExitTrampolineAddress   Offset = 1200
+	// ExecutionContextOffsetPendingExceptionTagIndex is an offset of `pendingExceptionTagIndex` field in wazevo.executionContext.
+	// 0xFFFFFFFF means no pending exception.
+	ExecutionContextOffsetPendingExceptionTagIndex Offset = 1208
+	// ExecutionContextOffsetExceptionValuesBegin is an offset of the first element of `exceptionValues` field in wazevo.executionContext.
+	// This is an array of 16 uint64 values (128 bytes) to store exception values.
+	ExecutionContextOffsetExceptionValuesBegin Offset = 1216
 )
 
 // ModuleContextOffsetData allows the compilers to get the information about offsets to the fields of wazevo.moduleContextOpaque,
